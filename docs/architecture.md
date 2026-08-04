@@ -18,8 +18,8 @@ The layers are deliberately narrow:
 | Chapter topology | `src/domain/lists.ts` | Ten ordered, independently looping sequences and Day 24 defaults |
 | State machine | `src/domain/state.ts` | Reading-date calculation, fixed sessions, cursor advancement, correction, and reset |
 | Local persistence | `src/data/database.ts` | Versioned Dexie/IndexedDB state used immediately and offline |
-| Cloud codec | `src/data/cloud-codec.ts` | Conversion between local state and normalized Firestore records |
-| Cloud sync | `src/data/cloud.ts` | Google sign-in, restore/upload decisions, queued writes, and remote replacement |
+| Cloud codec | `src/data/cloud-codec.ts` | Validated compact encoding for the atomic Firestore backup and version 1 migration |
+| Cloud sync | `src/data/cloud.ts` | Google sign-in, server reconciliation, and Firestore's durable offline write queue |
 | UI | `src/App.tsx` | Phone-first list, focus mode, history, settings, and recovery actions |
 | Access control | `firestore.rules` | Owner UID and verified-email enforcement |
 | Deployment | `.github/workflows/deploy-pages.yml` | Tested production build and GitHub Pages publication |
@@ -53,29 +53,35 @@ Cloud data is scoped below the authenticated user:
 
 ```text
 /users/{uid}
-/users/{uid}/sessions/{readingDate}
 ```
 
-The user document contains current cursors, active-session metadata, settings,
-and schema information. Historical sessions are separate compact documents.
-Firestore rules require both the matching authenticated UID and the configured
-verified Google email.
+The version 2 user document contains a monotonic revision, current cursors,
+active-session metadata, settings, and up to 10,000 compact history entries.
+Keeping the complete recovery state in one document makes every cloud update
+atomic; there is no delete-then-rebuild window. Version 1 session subdocuments
+remain read-only during automatic migration. Firestore rules require both the
+matching authenticated UID and the configured verified Google email, validate
+the document shape, reject deletes, and reject non-increasing version 2 writes.
 
 Synchronization follows these rules:
 
 - If the first sign-in finds no remote state, upload the complete local state.
-- If remote state exists, restore it locally; remote is the recovery source at
-  sign-in.
-- After sign-in, local mutations queue serialized cloud writes so quick taps do
-  not race each other.
-- Import and reset replace the remote representation rather than merging stale
-  history.
+- If only one copy has the greater revision, keep that copy. If equally revised
+  copies differ, ask which one to keep and rebase the selected device copy.
+- Submit each local mutation to Firestore immediately. This lets Firestore put
+  every change in its persistent offline queue; later taps never wait only in
+  volatile JavaScript memory.
+- Import and reset receive a new revision and atomically replace the remote
+  recovery document. Reset and import also preserve a downloaded pre-change
+  safety copy.
 - JSON export remains useful even with cloud sync and should stay backward
   compatible through explicit schema versioning.
 
-This is optimized for one reader and light personal use. If multi-device
-simultaneous editing becomes a real requirement, design explicit conflict
-resolution and test it before changing the current remote-on-sign-in policy.
+This is optimized for one reader primarily using one phone. Revision checks
+prevent silent stale restoration and catch the common two-copy conflict at
+reconciliation. They are not a general collaborative merge algorithm: avoid
+editing on multiple offline devices at the same time. If that becomes a real
+requirement, introduce operation-level merging and dedicated concurrency tests.
 
 ## Free-tier and security boundaries
 
@@ -101,12 +107,16 @@ Local verification:
 npm install
 npm run check
 npm run build
+npx playwright install chromium
+npm run test:e2e
+npm audit
 ```
 
 Deploy Authentication and Firestore configuration only when those files
 change:
 
 ```sh
+firebase deploy --only auth,firestore --dry-run --project horner-next-ten-isaiah
 firebase deploy --only auth,firestore --project horner-next-ten-isaiah
 ```
 
@@ -128,4 +138,9 @@ import a previously exported JSON backup.
 - Clearing browser data before that first successful sign-in also clears the
   only local copy unless a JSON backup exists.
 - The current synchronization policy is designed for personal, primarily
-  single-device use rather than concurrent collaboration.
+  single-device use rather than simultaneous offline editing on multiple
+  devices.
+- Local Firestore Security Rules emulator tests require Java 21, which is not
+  currently installed on the development Mac. Firebase's server-side dry run
+  remains the compilation fallback; production denial probes still verify the
+  deployed unauthenticated boundary.

@@ -9,6 +9,9 @@ import {
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const DEFAULT_ROLLOVER_HOUR = 4;
+export const MAX_READING_HISTORY_SESSIONS = 10_000;
+
+const MAX_PREFERRED_BIBLE_URL_LENGTH = 2_048;
 
 export type ListRecord<Value> = Record<ListId, Value>;
 
@@ -38,6 +41,7 @@ export interface ReadingSettings {
 
 export interface ReadingState {
   readonly version: typeof CURRENT_SCHEMA_VERSION;
+  readonly revision: number;
   readonly cursors: Readonly<ListRecord<number>>;
   readonly activeSession: ReadingSession;
   readonly history: readonly ReadingSession[];
@@ -54,6 +58,39 @@ function assertRolloverHour(rolloverHour: number): void {
   if (!Number.isInteger(rolloverHour) || rolloverHour < 0 || rolloverHour > 23) {
     throw new RangeError("rolloverHour must be an integer from 0 through 23");
   }
+}
+
+function normalizeSettings(settings: ReadingSettings): ReadingSettings {
+  assertRolloverHour(settings.rolloverHour);
+  const preferredBibleUrl = settings.preferredBibleUrl;
+  if (preferredBibleUrl === undefined) {
+    return { rolloverHour: settings.rolloverHour };
+  }
+  if (preferredBibleUrl.length > MAX_PREFERRED_BIBLE_URL_LENGTH) {
+    throw new RangeError("preferredBibleUrl is too long");
+  }
+  try {
+    if (new URL(preferredBibleUrl).protocol !== "https:") {
+      throw new Error("unsupported scheme");
+    }
+  } catch {
+    throw new TypeError("preferredBibleUrl must be a valid HTTPS URL");
+  }
+  return { rolloverHour: settings.rolloverHour, preferredBibleUrl };
+}
+
+function assertRevision(revision: number): void {
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new RangeError("revision must be a nonnegative safe integer");
+  }
+}
+
+function nextRevision(revision: number): number {
+  assertRevision(revision);
+  if (revision === Number.MAX_SAFE_INTEGER) {
+    throw new RangeError("revision cannot be incremented safely");
+  }
+  return revision + 1;
 }
 
 function localDateKey(date: Date): string {
@@ -89,16 +126,20 @@ export function createInitialState(
   now: Date,
   settings: ReadingSettings = { rolloverHour: DEFAULT_ROLLOVER_HOUR },
 ): ReadingState {
-  assertRolloverHour(settings.rolloverHour);
+  const normalizedSettings = normalizeSettings(settings);
   const cursors = listRecord((listId) =>
     cursorForChapter(listId, DAY_24_STARTING_CHAPTERS[listId]),
   );
   return {
     version: CURRENT_SCHEMA_VERSION,
+    revision: 0,
     cursors,
-    activeSession: createSession(readingDateFor(now, settings.rolloverHour), cursors),
+    activeSession: createSession(
+      readingDateFor(now, normalizedSettings.rolloverHour),
+      cursors,
+    ),
     history: [],
-    settings,
+    settings: normalizedSettings,
   };
 }
 
@@ -112,6 +153,7 @@ export function setCompletion(
   }
   return {
     ...state,
+    revision: nextRevision(state.revision),
     activeSession: {
       ...state.activeSession,
       completed: { ...state.activeSession.completed, [listId]: completed },
@@ -146,9 +188,12 @@ export function rolloverIfNeeded(state: ReadingState, now: Date): ReadingState {
   const cursors = advanceCompletedCursors(state);
   return {
     ...state,
+    revision: nextRevision(state.revision),
     cursors,
     activeSession: createSession(readingDate, cursors),
-    history: [...state.history, state.activeSession],
+    history: [...state.history, state.activeSession].slice(
+      -MAX_READING_HISTORY_SESSIONS,
+    ),
   };
 }
 
@@ -166,6 +211,7 @@ export function undoLastRollover(state: ReadingState): ReadingState {
   );
   return {
     ...state,
+    revision: nextRevision(state.revision),
     cursors,
     activeSession: previousSession,
     history: state.history.slice(0, -1),
@@ -194,6 +240,7 @@ export function setPreviousSessionCompletion(
   };
   return {
     ...state,
+    revision: nextRevision(state.revision),
     cursors: { ...state.cursors, [listId]: cursor },
     activeSession: {
       ...state.activeSession,
@@ -203,5 +250,43 @@ export function setPreviousSessionCompletion(
       },
     },
     history: [...state.history.slice(0, -1), updatedPrevious],
+  };
+}
+
+function sameSettings(left: ReadingSettings, right: ReadingSettings): boolean {
+  return (
+    left.rolloverHour === right.rolloverHour &&
+    left.preferredBibleUrl === right.preferredBibleUrl
+  );
+}
+
+export function setReadingSettings(
+  state: ReadingState,
+  settings: ReadingSettings,
+): ReadingState {
+  const normalizedSettings = normalizeSettings(settings);
+  if (sameSettings(state.settings, normalizedSettings)) {
+    return state;
+  }
+  return {
+    ...state,
+    revision: nextRevision(state.revision),
+    settings: normalizedSettings,
+  };
+}
+
+export function resetReadingState(state: ReadingState, now: Date): ReadingState {
+  const fresh = createInitialState(now, state.settings);
+  return { ...fresh, revision: nextRevision(state.revision) };
+}
+
+export function rebaseReadingState(
+  state: ReadingState,
+  previousRevision: number,
+): ReadingState {
+  assertRevision(previousRevision);
+  return {
+    ...state,
+    revision: nextRevision(Math.max(state.revision, previousRevision)),
   };
 }

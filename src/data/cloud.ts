@@ -9,29 +9,29 @@ import {
 } from "firebase/auth";
 import {
   collection,
-  deleteDoc,
   doc,
-  getDoc,
-  getDocs,
+  getDocFromServer,
+  getDocsFromServer,
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
   serverTimestamp,
   setDoc,
-  writeBatch,
+  waitForPendingWrites,
 } from "firebase/firestore";
 
 import type { ReadingState } from "../domain/state.js";
 import {
+  cloudStateNeedsMigration,
   decodeCloudState,
   encodeCloudCurrent,
-  encodeCloudSession,
 } from "./cloud-codec.js";
+
+export { CLOUD_OWNER_EMAIL, isCloudPermissionError } from "./cloud-config.js";
 
 const firebaseApp = initializeApp({
   projectId: "horner-next-ten-isaiah",
   appId: "1:331301995758:web:7a6ef217d462e0b4dadfff",
-  storageBucket: "horner-next-ten-isaiah.firebasestorage.app",
   apiKey: "AIzaSyD2KoP1r4Hka3D39hexIbPsJGGf4NxxYfQ",
   authDomain: "horner-next-ten-isaiah.firebaseapp.com",
   messagingSenderId: "331301995758",
@@ -46,8 +46,13 @@ function userDocument(userId: string) {
   return doc(firestore, "users", userId);
 }
 
-function sessionCollection(userId: string) {
+function legacySessionCollection(userId: string) {
   return collection(firestore, "users", userId, "sessions");
+}
+
+export interface LoadedCloudState {
+  readonly state: ReadingState;
+  readonly needsMigration: boolean;
 }
 
 export function observeCloudAccount(
@@ -65,61 +70,30 @@ export async function signOutOfCloud(): Promise<void> {
   await signOut(authentication);
 }
 
-export async function loadCloudState(userId: string): Promise<ReadingState | undefined> {
-  const currentSnapshot = await getDoc(userDocument(userId));
+export async function loadCloudState(userId: string): Promise<LoadedCloudState | undefined> {
+  const currentSnapshot = await getDocFromServer(userDocument(userId));
   if (!currentSnapshot.exists()) return undefined;
-  const historySnapshot = await getDocs(sessionCollection(userId));
-  return decodeCloudState(
-    currentSnapshot.data(),
-    historySnapshot.docs.map((snapshot) => snapshot.data()),
-  );
+  const currentValue = currentSnapshot.data();
+  const needsMigration = cloudStateNeedsMigration(currentValue);
+  const legacySessions = needsMigration
+    ? (await getDocsFromServer(legacySessionCollection(userId))).docs.map((snapshot) => snapshot.data())
+    : [];
+  return {
+    state: decodeCloudState(currentValue, legacySessions),
+    needsMigration,
+  };
 }
 
 export async function saveCloudState(
   userId: string,
   state: ReadingState,
 ): Promise<void> {
-  const batch = writeBatch(firestore);
-  batch.set(userDocument(userId), {
-    ...encodeCloudCurrent(state),
-    updatedAt: serverTimestamp(),
-  });
-  const latestSession = state.history.at(-1);
-  if (latestSession) {
-    batch.set(doc(sessionCollection(userId), latestSession.readingDate), {
-      ...encodeCloudSession(latestSession),
-      updatedAt: serverTimestamp(),
-    });
-  }
-  await batch.commit();
-}
-
-async function deleteAllCloudSessions(userId: string): Promise<void> {
-  const snapshots = await getDocs(sessionCollection(userId));
-  for (const snapshot of snapshots.docs) {
-    await deleteDoc(snapshot.ref);
-  }
-}
-
-export async function replaceCloudState(
-  userId: string,
-  state: ReadingState,
-): Promise<void> {
-  await deleteAllCloudSessions(userId);
-  const sessions = [...state.history];
-  while (sessions.length > 0) {
-    const chunk = sessions.splice(0, 400);
-    const batch = writeBatch(firestore);
-    for (const session of chunk) {
-      batch.set(doc(sessionCollection(userId), session.readingDate), {
-        ...encodeCloudSession(session),
-        updatedAt: serverTimestamp(),
-      });
-    }
-    await batch.commit();
-  }
   await setDoc(userDocument(userId), {
     ...encodeCloudCurrent(state),
     updatedAt: serverTimestamp(),
   });
+}
+
+export async function waitForCloudWrites(): Promise<void> {
+  await waitForPendingWrites(firestore);
 }

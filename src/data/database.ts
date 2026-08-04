@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 
+import { normalizeReadingState } from "../domain/backup.js";
 import type { ReadingState } from "../domain/state.js";
 
 interface StoredState {
@@ -19,7 +20,8 @@ class HornerDatabase extends Dexie {
 const database = new HornerDatabase();
 
 export async function loadReadingState(): Promise<ReadingState | undefined> {
-  return (await database.appState.get("primary"))?.state;
+  const stored = await database.appState.get("primary");
+  return stored ? normalizeReadingState(stored.state) : undefined;
 }
 
 export async function saveReadingState(state: ReadingState): Promise<void> {

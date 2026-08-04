@@ -21,8 +21,8 @@ Production builds are deployable to GitHub Pages with the included workflow.
 The hosted files contain no personal reading data. Firestore documents live
 under the signed-in user's Firebase UID and the deployed rules deny every other
 user. The rules also restrict storage to the owner's verified Google email, so
-public visitors cannot consume the Firebase quota. JSON export remains
-available as an independent backup.
+public visitors cannot read or write the personal cloud document. JSON export
+remains available as an independent backup.
 
 ## Firebase
 
@@ -30,7 +30,21 @@ The no-cost Firebase Spark project is `horner-next-ten-isaiah`. The public web
 configuration is bundled in the PWA by design; authorization is enforced by
 Firebase Authentication and [the checked-in Firestore rules](firestore.rules).
 
+There is no service-account key, database password, or private API secret in
+this repository. Firebase's browser API key identifies the project but does
+not authorize a database read. Firebase manages the signed-in Google session,
+and Firestore accepts reads and newer-version writes only when both the UID and
+verified owner email match. GitHub Pages contains application code and static
+chapter references; personal checkmarks and history remain in the owner-scoped
+Firestore document.
+
+Clearing all browser data removes the device's IndexedDB copy, cached app, and
+local sign-in session. It does not delete Firestore data. Signing in again with
+the owner account restores the durable copy. JSON export is the independent
+recovery path and reset downloads a safety backup before changing progress.
+
 ```sh
+firebase deploy --only auth,firestore --dry-run --project horner-next-ten-isaiah
 firebase deploy --only auth,firestore --project horner-next-ten-isaiah
 ```
 

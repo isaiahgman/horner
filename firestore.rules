@@ -9,11 +9,66 @@ service cloud.firestore {
         && request.auth.token.email_verified == true;
     }
 
-    match /users/{userId} {
-      allow read, write: if owns(userId);
+    function validCursors(cursors) {
+      return cursors is list
+        && cursors.size() == 10
+        && cursors[0] is int && cursors[0] >= 0 && cursors[0] < 89
+        && cursors[1] is int && cursors[1] >= 0 && cursors[1] < 187
+        && cursors[2] is int && cursors[2] >= 0 && cursors[2] < 78
+        && cursors[3] is int && cursors[3] >= 0 && cursors[3] < 65
+        && cursors[4] is int && cursors[4] >= 0 && cursors[4] < 62
+        && cursors[5] is int && cursors[5] >= 0 && cursors[5] < 150
+        && cursors[6] is int && cursors[6] >= 0 && cursors[6] < 31
+        && cursors[7] is int && cursors[7] >= 0 && cursors[7] < 249
+        && cursors[8] is int && cursors[8] >= 0 && cursors[8] < 250
+        && cursors[9] is int && cursors[9] >= 0 && cursors[9] < 28;
+    }
 
+    function validCurrentState() {
+      return request.resource.data.keys().hasOnly([
+          'schemaVersion',
+          'revision',
+          'cursorIndexes',
+          'activeReadingDate',
+          'activeCompletedMask',
+          'rolloverHour',
+          'preferredBibleUrl',
+          'history',
+          'updatedAt'
+        ])
+        && request.resource.data.schemaVersion == 2
+        && request.resource.data.revision is int
+        && request.resource.data.revision >= 0
+        && validCursors(request.resource.data.cursorIndexes)
+        && request.resource.data.activeReadingDate is string
+        && request.resource.data.activeReadingDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.activeCompletedMask is int
+        && request.resource.data.activeCompletedMask >= 0
+        && request.resource.data.activeCompletedMask <= 1023
+        && request.resource.data.rolloverHour is int
+        && request.resource.data.rolloverHour >= 0
+        && request.resource.data.rolloverHour <= 23
+        && (request.resource.data.preferredBibleUrl == null
+          || request.resource.data.preferredBibleUrl is string)
+        && request.resource.data.history is list
+        && request.resource.data.history.size() <= 10000
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    match /users/{userId} {
+      allow read: if owns(userId);
+      allow create: if owns(userId) && validCurrentState();
+      allow update: if owns(userId)
+        && validCurrentState()
+        && (resource.data.schemaVersion == 1
+          || request.resource.data.revision > resource.data.revision);
+      allow delete: if false;
+
+      // Version 1 history remains readable during the automatic version 2
+      // migration. The current client no longer writes this collection.
       match /sessions/{readingDate} {
-        allow read, write: if owns(userId);
+        allow read: if owns(userId);
+        allow write: if false;
       }
     }
   }

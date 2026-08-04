@@ -4,6 +4,7 @@ import {
   chapterAt,
   cursorForChapter,
   LIST_IDS,
+  READING_LIST_BY_ID,
   type ChapterId,
   type ListId,
 } from "./lists.js";
@@ -11,10 +12,14 @@ import {
   completedCount,
   createInitialState,
   createSession,
+  MAX_READING_HISTORY_SESSIONS,
   readingDateFor,
+  rebaseReadingState,
+  resetReadingState,
   rolloverIfNeeded,
   setCompletion,
   setPreviousSessionCompletion,
+  setReadingSettings,
   toggleCompletion,
   undoLastRollover,
   type ListRecord,
@@ -58,6 +63,7 @@ describe("reading-day calculation", () => {
 describe("reading state machine", () => {
   it("creates one fixed chapter from each list", () => {
     const state = createInitialState(localDate("2026-08-03T12:00:00"));
+    expect(state.revision).toBe(0);
     expect(Object.values(state.activeSession.chapters)).toHaveLength(10);
     expect(Object.values(state.activeSession.chapters)).toEqual([
       "matthew:24",
@@ -79,7 +85,9 @@ describe("reading state machine", () => {
     const checked = toggleCompletion(state, "gospels");
     expect(checked.activeSession.chapters.gospels).toBe("matthew:24");
     expect(checked.activeSession.completed.gospels).toBe(true);
+    expect(checked.revision).toBe(1);
     expect(state.activeSession.completed.gospels).toBe(false);
+    expect(setCompletion(checked, "gospels", true)).toBe(checked);
   });
 
   it("advances only checked lists at the next reading day", () => {
@@ -124,6 +132,7 @@ describe("reading state machine", () => {
     });
     expect(next.history).toHaveLength(1);
     expect(completedCount(next.activeSession)).toBe(0);
+    expect(next.revision).toBe(state.revision + 1);
   });
 
   it("creates no phantom sessions or extra advancement after skipped days", () => {
@@ -143,6 +152,21 @@ describe("reading state machine", () => {
     }
   });
 
+  it("keeps a bounded rolling history without affecting current pointers", () => {
+    const initial = createInitialState(localDate("2026-08-03T12:00:00"));
+    const full = {
+      ...initial,
+      history: Array.from(
+        { length: MAX_READING_HISTORY_SESSIONS },
+        () => initial.activeSession,
+      ),
+    };
+    const rolled = rolloverIfNeeded(full, localDate("2026-08-04T12:00:00"));
+    expect(rolled.history).toHaveLength(MAX_READING_HISTORY_SESSIONS);
+    expect(rolled.history.at(-1)).toBe(initial.activeSession);
+    expect(rolled.activeSession.chapters).toEqual(initial.activeSession.chapters);
+  });
+
   it("is idempotent within one reading day", () => {
     const state = setCompletion(
       createInitialState(localDate("2026-08-03T10:00:00")),
@@ -153,12 +177,27 @@ describe("reading state machine", () => {
     expect(sameDay).toBe(state);
   });
 
-  it("loops each list independently", () => {
-    let state = stateAt(localDate("2026-08-03T12:00:00"), { acts: "acts:28" });
-    state = setCompletion(state, "acts", true);
-    const next = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
-    expect(next.activeSession.chapters.acts).toBe("acts:1");
-    expect(next.activeSession.chapters.gospels).toBe("matthew:24");
+  it("loops every list independently", () => {
+    for (const listId of LIST_IDS) {
+      const list = READING_LIST_BY_ID[listId];
+      const finalChapter = list.chapters.at(-1);
+      const firstChapter = list.chapters[0];
+      expect(finalChapter).toBeDefined();
+      expect(firstChapter).toBeDefined();
+      let state = stateAt(localDate("2026-08-03T12:00:00"), {
+        [listId]: finalChapter!.id,
+      });
+      state = setCompletion(state, listId, true);
+      const next = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
+      expect(next.activeSession.chapters[listId]).toBe(firstChapter!.id);
+      for (const otherListId of LIST_IDS) {
+        if (otherListId !== listId) {
+          expect(next.activeSession.chapters[otherListId]).toBe(
+            state.activeSession.chapters[otherListId],
+          );
+        }
+      }
+    }
   });
 
   it("can undo a rollover before the new session has progress", () => {
@@ -166,7 +205,7 @@ describe("reading state machine", () => {
     state = setCompletion(state, "gospels", true);
     const rolled = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
     const undone = undoLastRollover(rolled);
-    expect(undone).toEqual(state);
+    expect(undone).toEqual({ ...state, revision: rolled.revision + 1 });
   });
 
   it("refuses to discard progress while undoing a rollover", () => {
@@ -185,10 +224,73 @@ describe("reading state machine", () => {
     const repaired = setPreviousSessionCompletion(state, "gospels", false);
     expect(repaired.history[0]?.completed.gospels).toBe(false);
     expect(repaired.activeSession.chapters.gospels).toBe("matthew:24");
+    expect(repaired.revision).toBe(state.revision + 1);
+  });
+
+  it("can add a missed completion and advance the current chapter", () => {
+    let state = createInitialState(localDate("2026-08-03T12:00:00"));
+    state = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
+    expect(state.activeSession.chapters.gospels).toBe("matthew:24");
+
+    const repaired = setPreviousSessionCompletion(state, "gospels", true);
+    expect(repaired.history[0]?.completed.gospels).toBe(true);
+    expect(repaired.activeSession.chapters.gospels).toBe("matthew:25");
+    expect(repaired.cursors.gospels).toBe(cursorForChapter("gospels", "matthew:25"));
+  });
+
+  it("refuses to change history after its current successor has progress", () => {
+    let state = createInitialState(localDate("2026-08-03T12:00:00"));
+    state = setCompletion(state, "gospels", true);
+    state = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
+    state = setCompletion(state, "gospels", true);
+    expect(() => setPreviousSessionCompletion(state, "gospels", false)).toThrow(
+      /successor has progress/,
+    );
+  });
+
+  it("leaves state unchanged when there is no correction to make", () => {
+    const initial = createInitialState(localDate("2026-08-03T12:00:00"));
+    expect(setPreviousSessionCompletion(initial, "gospels", true)).toBe(initial);
+
+    const rolled = rolloverIfNeeded(initial, localDate("2026-08-04T12:00:00"));
+    expect(setPreviousSessionCompletion(rolled, "gospels", false)).toBe(rolled);
   });
 
   it("does not roll backward when the device clock moves backward", () => {
     const state = createInitialState(localDate("2026-08-03T12:00:00"));
     expect(rolloverIfNeeded(state, localDate("2026-08-02T12:00:00"))).toBe(state);
+  });
+
+  it("revisions settings, reset, and imported-state rebases", () => {
+    const initial = createInitialState(localDate("2026-08-03T12:00:00"));
+    expect(setReadingSettings(initial, initial.settings)).toBe(initial);
+
+    const configured = setReadingSettings(initial, {
+      rolloverHour: 3,
+      preferredBibleUrl: "https://example.com/read",
+    });
+    expect(configured.revision).toBe(1);
+    expect(configured.settings).toEqual({
+      rolloverHour: 3,
+      preferredBibleUrl: "https://example.com/read",
+    });
+    expect(() => setReadingSettings(configured, { rolloverHour: 24 })).toThrow(
+      RangeError,
+    );
+    expect(() =>
+      setReadingSettings(configured, {
+        rolloverHour: 4,
+        preferredBibleUrl: "javascript:alert(1)",
+      }),
+    ).toThrow(/valid HTTPS URL/);
+
+    const reset = resetReadingState(configured, localDate("2026-08-05T12:00:00"));
+    expect(reset.revision).toBe(2);
+    expect(reset.activeSession.chapters).toEqual(initial.activeSession.chapters);
+    expect(reset.settings).toEqual(configured.settings);
+
+    expect(rebaseReadingState(reset, 40).revision).toBe(41);
+    expect(rebaseReadingState({ ...reset, revision: 50 }, 40).revision).toBe(51);
+    expect(() => rebaseReadingState(reset, -1)).toThrow(RangeError);
   });
 });

@@ -10,12 +10,12 @@
   --surface-muted: #edf1ec;
   --surface-glass: rgb(251 250 246 / 88%);
   --ink: #1d2925;
-  --muted: #68756f;
-  --subtle: #84908a;
+  --muted: #56645d;
+  --subtle: #5b6962;
   --accent: #29594d;
   --accent-strong: #173f35;
   --accent-soft: #dfeae4;
-  --warm: #a66f4a;
+  --warm: #8c5a39;
   --warm-soft: #f1e5d8;
   --line: rgb(35 62 53 / 12%);
   --line-strong: rgb(35 62 53 / 20%);
@@ -36,7 +36,7 @@
     --surface-glass: rgb(25 32 28 / 88%);
     --ink: #f2eee5;
     --muted: #abb5af;
-    --subtle: #8d9992;
+    --subtle: #99a79f;
     --accent: #91c0af;
     --accent-strong: #b1d5c7;
     --accent-soft: #203a31;
@@ -95,11 +95,17 @@ button {
   color: inherit;
 }
 
+button:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: .62;
+}
+
 button:focus-visible,
 a:focus-visible,
 select:focus-visible,
 label:focus-within {
-  outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline: 3px solid var(--accent);
   outline-offset: 3px;
 }
 
@@ -123,6 +129,8 @@ label:focus-within {
   align-items: center;
   gap: 13px;
   padding: calc(17px + env(safe-area-inset-top)) 22px 15px;
+  padding-right: max(22px, env(safe-area-inset-right));
+  padding-left: max(22px, env(safe-area-inset-left));
   border-bottom: 1px solid var(--line);
   background: var(--surface-glass);
   backdrop-filter: blur(22px) saturate(140%);
@@ -169,6 +177,19 @@ label:focus-within {
 
 main {
   padding: 30px 22px 26px;
+  padding-right: max(22px, env(safe-area-inset-right));
+  padding-left: max(22px, env(safe-area-inset-left));
+}
+
+.storage-alert {
+  margin: 0 0 22px;
+  padding: 14px 16px;
+  border: 1px solid var(--danger-line);
+  border-radius: 14px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger-line) 18%, var(--surface));
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .loading {
@@ -269,6 +290,12 @@ main {
   background: var(--accent-soft);
 }
 
+.sync-chip.is-warning {
+  border-color: var(--danger-line);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger-line) 18%, transparent);
+}
+
 .sync-chip span {
   color: var(--accent);
   font-size: 9px;
@@ -285,6 +312,7 @@ main {
 }
 
 .chapter-row {
+  position: relative;
   display: grid;
   grid-template-columns: 49px 1fr 24px;
   align-items: center;
@@ -309,9 +337,11 @@ main {
 }
 
 .check-button {
+  position: relative;
+  z-index: 2;
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   place-items: center;
   border: 1.5px solid var(--subtle);
   border-radius: 12px;
@@ -348,7 +378,9 @@ main {
 }
 
 .chapter-copy a {
-  display: inline-block;
+  display: flex;
+  min-height: 44px;
+  align-items: center;
   color: var(--ink);
   font-family: ui-serif, Charter, Georgia, "Times New Roman", serif;
   font-size: 22px;
@@ -357,9 +389,27 @@ main {
   text-decoration: none;
 }
 
+.chapter-copy a::after {
+  position: absolute;
+  z-index: 1;
+  inset: 0 0 0 58px;
+  border-radius: inherit;
+  content: "";
+}
+
+.chapter-copy a:focus-visible::after {
+  outline: 3px solid var(--accent);
+  outline-offset: -4px;
+}
+
+.chapter-copy a:focus-visible {
+  outline: none;
+}
+
 .open-arrow {
   color: var(--warm);
   font-size: 17px;
+  pointer-events: none;
 }
 
 .secondary-view > h2 {
@@ -503,9 +553,12 @@ main {
   position: fixed;
   z-index: 30;
   right: 22px;
+  right: max(22px, env(safe-area-inset-right));
   bottom: calc(102px + env(safe-area-inset-bottom));
   left: 22px;
-  width: min(calc(100% - 44px), 640px);
+  left: max(22px, env(safe-area-inset-left));
+  width: auto;
+  max-width: 640px;
   margin: auto;
   padding: 15px 18px;
   border: 1px solid rgb(255 255 255 / 9%);
@@ -514,17 +567,45 @@ main {
   background: #243f36;
   box-shadow: 0 14px 36px rgb(0 0 0 / 24%);
   text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.toast button {
+  display: grid;
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: 44px;
+  margin: -10px -12px -10px 0;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 11px;
+  color: inherit;
+  background: transparent;
+  font-size: 24px;
+}
+
+.toast button:not([aria-label="Dismiss message"]) {
+  padding: 0 9px;
+  font-size: 13px;
+  font-weight: 750;
 }
 
 .bottom-nav {
   position: fixed;
   z-index: 20;
-  right: 0;
+  right: 12px;
+  right: max(12px, env(safe-area-inset-right));
   bottom: max(10px, env(safe-area-inset-bottom));
-  left: 0;
+  left: 12px;
+  left: max(12px, env(safe-area-inset-left));
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  width: min(calc(100% - 24px), 676px);
+  width: auto;
+  max-width: 676px;
   min-height: 72px;
   margin: auto;
   padding: 7px 8px 9px;
@@ -581,12 +662,16 @@ main {
 @media (min-width: 600px) {
   main {
     padding-right: 42px;
+    padding-right: max(42px, env(safe-area-inset-right));
     padding-left: 42px;
+    padding-left: max(42px, env(safe-area-inset-left));
   }
 
   .topbar {
     padding-right: 42px;
+    padding-right: max(42px, env(safe-area-inset-right));
     padding-left: 42px;
+    padding-left: max(42px, env(safe-area-inset-left));
   }
 }
 

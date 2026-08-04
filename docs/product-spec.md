@@ -64,11 +64,14 @@ completed session history, and settings. A session stores its reading-date key,
 the exact ten chapter IDs shown, and ten completion flags. Backup import must
 validate the schema and referential integrity before replacing local data.
 
-Cloud state is normalized into one current-state document and one compact
-document per historical reading day. Each record is scoped to the authenticated
-user's UID and the owner's verified Google email by Firestore Security Rules. A
-first sign-in uploads existing local progress when no cloud state exists; later
-sign-ins restore the cloud copy.
+Cloud state is encoded into one compact, atomically replaced document containing
+the current state and bounded history. Each record is scoped to the
+authenticated user's UID and the owner's verified Google email by Firestore
+Security Rules. A first sign-in uploads existing local progress when no cloud
+state exists. Later sign-ins compare monotonic revisions: the newer copy wins,
+while divergent copies at the same revision require an explicit device-or-cloud
+choice. Version 1 per-session cloud records remain readable only for automatic
+migration.
 
 ## Acceptance criteria
 
@@ -86,6 +89,10 @@ sign-ins restore the cloud copy.
   150, 31, 249, 250, and 28 chapters.
 - A first Google sign-in uploads existing device progress when no cloud state
   exists; signing in after local data is cleared restores the cloud state.
+- Rapid taps persist in invocation order locally and are submitted immediately
+  to Firestore's durable offline queue.
+- A newer signed-out device copy is not silently overwritten by an older cloud
+  copy, and equal-revision divergence requires an explicit choice.
 - Unauthenticated clients and one signed-in user attempting to access another
   user's UID path are denied by Firestore Security Rules.
 
