@@ -1,0 +1,20 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owns(userId) {
+      return request.auth != null
+        && request.auth.uid == userId
+        && request.auth.token.email == 'isaiahgathala@gmail.com'
+        && request.auth.token.email_verified == true;
+    }
+
+    match /users/{userId} {
+      allow read, write: if owns(userId);
+
+      match /sessions/{readingDate} {
+        allow read, write: if owns(userId);
+      }
+    }
+  }
+}

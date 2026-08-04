@@ -4,8 +4,10 @@ A local-first reading companion for Professor Grant Horner's Ten Lists Bible
 Reading System. Progress belongs to ten independent, looping chapter lists;
 calendar time never creates a backlog.
 
-The phone-first PWA stores progress locally in IndexedDB, works offline after
-its first visit, and starts at Day 24 of the supplied resumed calendar.
+The phone-first PWA starts at Day 24 of the supplied resumed calendar. It saves
+immediately to IndexedDB for offline use and, after Google sign-in, synchronizes
+an owner-private copy to Cloud Firestore so progress survives cleared browser
+data and device changes.
 
 ## Development
 
@@ -16,8 +18,25 @@ npm run dev
 ```
 
 Production builds are deployable to GitHub Pages with the included workflow.
-The hosted files contain no personal reading data; progress and history remain
-inside the browser unless explicitly exported as a JSON backup.
+The hosted files contain no personal reading data. Firestore documents live
+under the signed-in user's Firebase UID and the deployed rules deny every other
+user. The rules also restrict storage to the owner's verified Google email, so
+public visitors cannot consume the Firebase quota. JSON export remains
+available as an independent backup.
+
+## Firebase
+
+The no-cost Firebase Spark project is `horner-next-ten-isaiah`. The public web
+configuration is bundled in the PWA by design; authorization is enforced by
+Firebase Authentication and [the checked-in Firestore rules](firestore.rules).
+
+```sh
+firebase deploy --only auth,firestore --project horner-next-ten-isaiah
+```
+
+Do not attach a Google Cloud billing account or add Functions, paid Google Cloud
+services, or phone authentication. The app needs only free Google sign-in and
+the single free Firestore database.
 
 See [the product specification](docs/product-spec.md) for the MVP behavior and
 acceptance criteria.

@@ -1,5 +1,14 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import type { User } from "firebase/auth";
 
+import {
+  loadCloudState,
+  observeCloudAccount,
+  replaceCloudState,
+  saveCloudState,
+  signInToCloud,
+  signOutOfCloud,
+} from "./data/cloud.js";
 import { loadReadingState, replaceReadingState, saveReadingState } from "./data/database.js";
 import { parseBackupJson, serializeBackup } from "./domain/backup.js";
 import {
@@ -19,6 +28,7 @@ import {
 } from "./domain/state.js";
 
 type View = "today" | "history" | "settings";
+type SyncStatus = "local" | "syncing" | "saved" | "offline";
 
 interface InstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -88,16 +98,73 @@ export function App() {
   const [view, setView] = useState<View>("today");
   const [message, setMessage] = useState("");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent>();
+  const [account, setAccount] = useState<User | null>();
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
+  const stateRef = useRef<ReadingState | undefined>(undefined);
+  const accountRef = useRef<User | null>(null);
+  const syncQueue = useRef<Promise<void>>(Promise.resolve());
+
+  const queueCloudSave = (next: ReadingState, replace = false) => {
+    const user = accountRef.current;
+    if (!user) return;
+    setSyncStatus("syncing");
+    syncQueue.current = syncQueue.current
+      .catch(() => undefined)
+      .then(() => replace ? replaceCloudState(user.uid, next) : saveCloudState(user.uid, next))
+      .then(() => setSyncStatus("saved"))
+      .catch(() => setSyncStatus("offline"));
+  };
+
+  const persistState = (next: ReadingState, replace = false) => {
+    stateRef.current = next;
+    setState(next);
+    void saveReadingState(next);
+    queueCloudSave(next, replace);
+  };
 
   useEffect(() => {
     let cancelled = false;
+    let unsubscribe: () => void = () => undefined;
     void (async () => {
       const stored = await loadReadingState();
       const current = rolloverIfNeeded(stored ?? createInitialState(new Date()), new Date());
       await saveReadingState(current);
-      if (!cancelled) setState(current);
+      if (cancelled) return;
+      stateRef.current = current;
+      setState(current);
+
+      unsubscribe = observeCloudAccount((user) => {
+        accountRef.current = user;
+        setAccount(user);
+        if (!user) {
+          setSyncStatus("local");
+          return;
+        }
+        setSyncStatus("syncing");
+        void (async () => {
+          try {
+            const remote = await loadCloudState(user.uid);
+            if (cancelled) return;
+            if (remote) {
+              const refreshed = rolloverIfNeeded(remote, new Date());
+              stateRef.current = refreshed;
+              setState(refreshed);
+              await replaceReadingState(refreshed);
+              if (refreshed !== remote) await saveCloudState(user.uid, refreshed);
+            } else if (stateRef.current) {
+              await replaceCloudState(user.uid, stateRef.current);
+            }
+            if (!cancelled) setSyncStatus("saved");
+          } catch {
+            if (!cancelled) setSyncStatus("offline");
+          }
+        })();
+      });
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -105,7 +172,11 @@ export function App() {
       setState((current) => {
         if (!current) return current;
         const next = rolloverIfNeeded(current, new Date());
-        if (next !== current) void saveReadingState(next);
+        if (next !== current) {
+          stateRef.current = next;
+          void saveReadingState(next);
+          queueCloudSave(next);
+        }
         return next;
       });
     };
@@ -131,17 +202,12 @@ export function App() {
 
   const history = useMemo(() => [...(state?.history ?? [])].reverse(), [state?.history]);
 
-  const commit = (next: ReadingState) => {
-    setState(next);
-    void saveReadingState(next);
-  };
-
   if (!state) {
     return <main className="loading">Opening your next ten…</main>;
   }
 
   const updateToday = (listId: ListId, completed: boolean) => {
-    commit(setCompletion(state, listId, completed));
+    persistState(setCompletion(state, listId, completed));
   };
 
   const exportBackup = () => {
@@ -162,7 +228,7 @@ export function App() {
     try {
       const imported = rolloverIfNeeded(parseBackupJson(await file.text()), new Date());
       await replaceReadingState(imported);
-      setState(imported);
+      persistState(imported, true);
       setMessage("Backup restored.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not restore this backup.");
@@ -173,7 +239,7 @@ export function App() {
     if (!window.confirm("Reset all reading progress and return to Day 24?")) return;
     const fresh = createInitialState(new Date(), state.settings);
     await replaceReadingState(fresh);
-    setState(fresh);
+    persistState(fresh, true);
     setMessage("Progress reset to Day 24.");
   };
 
@@ -190,6 +256,21 @@ export function App() {
   const requestPersistentStorage = async () => {
     const granted = await navigator.storage?.persist?.();
     setMessage(granted ? "This device granted persistent storage." : "Storage stays local; keep regular JSON backups.");
+  };
+
+  const signIn = async () => {
+    try {
+      setSyncStatus("syncing");
+      await signInToCloud();
+    } catch (error) {
+      setSyncStatus("local");
+      setMessage(error instanceof Error ? error.message : "Google sign-in did not finish.");
+    }
+  };
+
+  const signOut = async () => {
+    await signOutOfCloud();
+    setMessage("Signed out. This device still has its local copy.");
   };
 
   return (
@@ -219,6 +300,12 @@ export function App() {
             {state.history.length === 0 && (
               <p className="resume-note">Resumed from PDF Day 24. Only reading moves these chapters forward.</p>
             )}
+            <div className={`sync-chip ${account ? "is-cloud" : ""}`}>
+              <span aria-hidden="true">{account ? "●" : "○"}</span>
+              {account
+                ? syncStatus === "syncing" ? "Saving to cloud…" : syncStatus === "offline" ? "Offline — saved on device" : "Protected in cloud"
+                : "Device only — sign in under Settings"}
+            </div>
             <SessionRows session={state.activeSession} interactive onChange={updateToday} />
             <p className="quiet-note">Unchecked chapters stay here. Checked chapters advance after the 4:00 a.m. reading-day boundary.</p>
           </section>
@@ -241,7 +328,7 @@ export function App() {
                   interactive={index === 0}
                   onChange={index === 0 ? (listId, completed) => {
                     try {
-                      commit(setPreviousSessionCompletion(state, listId, completed));
+                      persistState(setPreviousSessionCompletion(state, listId, completed));
                     } catch (error) {
                       setMessage(error instanceof Error ? error.message : "That reading can no longer be changed.");
                     }
@@ -257,12 +344,25 @@ export function App() {
           <section className="secondary-view settings-view">
             <p className="eyebrow">Local and private</p>
             <h2>Settings</h2>
+            <div className={`setting-card cloud-card ${account ? "connected" : ""}`}>
+              {account ? (
+                <>
+                  <div><strong>Cloud protection is on.</strong><p>{account.email} · {syncStatus === "syncing" ? "Saving…" : syncStatus === "offline" ? "Offline; changes will retry" : "All changes saved"}</p></div>
+                  <button type="button" onClick={signOut}>Sign out</button>
+                </>
+              ) : (
+                <>
+                  <div><strong>Protect your progress.</strong><p>Sign in with Google so clearing Safari or changing phones cannot erase your reading history.</p></div>
+                  <button className="primary-button" type="button" onClick={signIn}>Sign in with Google</button>
+                </>
+              )}
+            </div>
             <div className="setting-card">
               <label htmlFor="rollover">Reading day begins</label>
               <select
                 id="rollover"
                 value={state.settings.rolloverHour}
-                onChange={(event) => commit({
+                onChange={(event) => persistState({
                   ...state,
                   settings: { ...state.settings, rolloverHour: Number(event.target.value) },
                 })}
@@ -273,7 +373,7 @@ export function App() {
               </select>
             </div>
             <div className="setting-card stack">
-              <div><strong>Your data stays on this device.</strong><p>Download a backup before clearing Safari data or changing phones.</p></div>
+              <div><strong>Portable backup.</strong><p>Cloud sync is automatic when signed in. JSON gives you an additional independent copy whenever you want one.</p></div>
               <button type="button" onClick={exportBackup}>Export JSON backup</button>
               <label className="file-button">Import JSON backup<input type="file" accept="application/json,.json" onChange={importBackup} /></label>
               <button type="button" onClick={requestPersistentStorage}>Request persistent storage</button>

@@ -99,6 +99,22 @@ main { padding: 25px 18px 18px; }
   font-size: 13px;
   line-height: 1.5;
 }
+.sync-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  margin: -4px 0 14px;
+  padding: 7px 10px;
+  border: 1px solid #d5cdbd;
+  border-radius: 999px;
+  color: #7a756b;
+  background: rgb(255 255 255 / 45%);
+  font-size: 11px;
+  font-weight: 700;
+}
+.sync-chip.is-cloud { border-color: #aebfb6; color: #31584d; background: #eaf0eb; }
+.sync-chip span { color: #7ba18f; font-size: 9px; }
 .resume-note {
   margin: -2px 0 17px;
   padding: 12px 14px;
@@ -149,6 +165,9 @@ main { padding: 25px 18px 18px; }
 .setting-card label:first-child, .setting-card strong { font-weight: 700; }
 .setting-card p { margin: 5px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
 .setting-card select, .setting-card button, .file-button { width: 100%; min-height: 46px; padding: 10px 13px; border: 1px solid #c7c0b0; border-radius: 11px; background: #fffdf8; font-weight: 600; }
+.cloud-card { border-color: #c8b778; background: #fbf5e4; }
+.cloud-card.connected { border-color: #a9bdb3; background: #eaf0eb; }
+.setting-card .primary-button { border-color: var(--forest); color: white; background: var(--forest); }
 .file-button { display: grid; place-items: center; text-align: center; }
 .file-button input { display: none; }
 .danger-button { width: 100%; min-height: 48px; margin-top: 10px; border: 1px solid #cba9a1; border-radius: 12px; color: #874438; background: transparent; font-weight: 700; }

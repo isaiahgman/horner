@@ -1,0 +1,19 @@
+{
+  "firestore": {
+    "database": "(default)",
+    "location": "nam5",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "auth": {
+    "providers": {
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Next Ten",
+        "supportEmail": "isaiahgathala@gmail.com",
+        "authorizedRedirectUris": [
+          "https://isaiahgman.github.io/horner/"
+        ]
+      }
+    }
+  }
+}

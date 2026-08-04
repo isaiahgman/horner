@@ -42,25 +42,33 @@ backlogs, streak pressure, missed-day warnings, charts, or productivity scores.
 2. Automatic, self-healing reading-day rollover.
 3. Offline, installable PWA behavior.
 4. Local IndexedDB persistence with schema versioning.
-5. Recent session history and a safe undo/correction path.
-6. JSON export, validated JSON import, and confirmed reset.
-7. A best-effort persistent-storage request where supported.
+5. Google sign-in and owner-private Firestore synchronization so clearing local
+   browser data or changing devices does not erase progress.
+6. Recent session history and a safe undo/correction path.
+7. JSON export, validated JSON import, and confirmed reset.
+8. A best-effort persistent-storage request where supported.
 
-Accounts, cloud sync, reminders, notes, social features, streaks, charts, and
-reading-time estimates are explicitly deferred.
+Reminders, notes, social features, streaks, charts, and reading-time estimates
+are explicitly deferred.
 
 ## Data and architecture
 
 The chapter topology is static application data. The reading engine is pure
 TypeScript and has no UI, storage, network, or clock dependency: callers supply
-the current time and persist returned state. The UI will use Vite and React;
-IndexedDB access will be isolated behind a repository boundary. No Bible-text
-API is necessary because the app stores references only.
+the current time and persist returned state. The UI uses Vite and React;
+IndexedDB and Firestore access are isolated behind repository boundaries. No
+Bible-text API is necessary because the app stores references only.
 
 State consists of a schema version, ten cursor indexes, one active session,
 completed session history, and settings. A session stores its reading-date key,
 the exact ten chapter IDs shown, and ten completion flags. Backup import must
 validate the schema and referential integrity before replacing local data.
+
+Cloud state is normalized into one current-state document and one compact
+document per historical reading day. Each record is scoped to the authenticated
+user's UID and the owner's verified Google email by Firestore Security Rules. A
+first sign-in uploads existing local progress when no cloud state exists; later
+sign-ins restore the cloud copy.
 
 ## Acceptance criteria
 
@@ -76,6 +84,10 @@ validate the schema and referential integrity before replacing local data.
 - The engine never advances a cursor solely because multiple dates elapsed.
 - The ten bundled sequences have the published lengths: 89, 187, 78, 65, 62,
   150, 31, 249, 250, and 28 chapters.
+- A first Google sign-in uploads existing device progress when no cloud state
+  exists; signing in after local data is cleared restores the cloud state.
+- Unauthenticated clients and one signed-in user attempting to access another
+  user's UID path are denied by Firestore Security Rules.
 
 ## Canonical source
 
