@@ -30,15 +30,37 @@ import {
 type View = "today" | "history" | "settings";
 type SyncStatus = "local" | "syncing" | "saved" | "offline";
 
-interface InstallPromptEvent extends Event {
-  prompt(): Promise<void>;
-  readonly userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
-}
-
 function chapterLabel(listId: ListId, chapterId: ChapterId): string {
   return (
     READING_LIST_BY_ID[listId].chapters.find(({ id }) => id === chapterId)?.label ??
     chapterId
+  );
+}
+
+function NavIcon({ view }: { readonly view: View }) {
+  if (view === "today") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.25" />
+        <path d="M12 2.75v2M12 19.25v2M2.75 12h2M19.25 12h2M5.46 5.46l1.42 1.42M17.12 17.12l1.42 1.42M18.54 5.46l-1.42 1.42M6.88 17.12l-1.42 1.42" />
+      </svg>
+    );
+  }
+  if (view === "history") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8.25" />
+        <path d="M12 7.75v4.7l3.2 1.85" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 6.5h7M15 6.5h5M4 12h3M11 12h9M4 17.5h9M17 17.5h3" />
+      <circle cx="13" cy="6.5" r="2" />
+      <circle cx="9" cy="12" r="2" />
+      <circle cx="15" cy="17.5" r="2" />
+    </svg>
   );
 }
 
@@ -97,7 +119,6 @@ export function App() {
   const [state, setState] = useState<ReadingState>();
   const [view, setView] = useState<View>("today");
   const [message, setMessage] = useState("");
-  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent>();
   const [account, setAccount] = useState<User | null>();
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
   const stateRef = useRef<ReadingState | undefined>(undefined);
@@ -191,15 +212,6 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const capture = (event: Event) => {
-      event.preventDefault();
-      setInstallPrompt(event as InstallPromptEvent);
-    };
-    window.addEventListener("beforeinstallprompt", capture);
-    return () => window.removeEventListener("beforeinstallprompt", capture);
-  }, []);
-
   const history = useMemo(() => [...(state?.history ?? [])].reverse(), [state?.history]);
 
   if (!state) {
@@ -243,16 +255,6 @@ export function App() {
     setMessage("Progress reset to Day 24.");
   };
 
-  const install = async () => {
-    if (installPrompt) {
-      await installPrompt.prompt();
-      await installPrompt.userChoice;
-      setInstallPrompt(undefined);
-    } else {
-      setMessage("On iPhone: tap Share, then Add to Home Screen.");
-    }
-  };
-
   const requestPersistentStorage = async () => {
     const granted = await navigator.storage?.persist?.();
     setMessage(granted ? "This device granted persistent storage." : "Storage stays local; keep regular JSON backups.");
@@ -281,7 +283,6 @@ export function App() {
           <p className="eyebrow">Horner reading</p>
           <h1>Next Ten</h1>
         </div>
-        <button className="install-button" type="button" onClick={install}>Install</button>
       </header>
 
       <main>
@@ -297,9 +298,6 @@ export function App() {
               </div>
             </div>
             <div className="progress-track"><span style={{ width: `${completedCount(state.activeSession) * 10}%` }} /></div>
-            {state.history.length === 0 && (
-              <p className="resume-note">Resumed from PDF Day 24. Only reading moves these chapters forward.</p>
-            )}
             <div className={`sync-chip ${account ? "is-cloud" : ""}`}>
               <span aria-hidden="true">{account ? "●" : "○"}</span>
               {account
@@ -386,9 +384,9 @@ export function App() {
       {message && <button className="toast" type="button" onClick={() => setMessage("")}>{message}</button>}
 
       <nav className="bottom-nav" aria-label="Main navigation">
-        <button className={view === "today" ? "active" : ""} onClick={() => setView("today")} type="button"><span>☀</span>Today</button>
-        <button className={view === "history" ? "active" : ""} onClick={() => setView("history")} type="button"><span>◷</span>History</button>
-        <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")} type="button"><span>⚙</span>Settings</button>
+        <button aria-current={view === "today" ? "page" : undefined} className={view === "today" ? "active" : ""} onClick={() => setView("today")} type="button"><NavIcon view="today" />Today</button>
+        <button aria-current={view === "history" ? "page" : undefined} className={view === "history" ? "active" : ""} onClick={() => setView("history")} type="button"><NavIcon view="history" />History</button>
+        <button aria-current={view === "settings" ? "page" : undefined} className={view === "settings" ? "active" : ""} onClick={() => setView("settings")} type="button"><NavIcon view="settings" />Settings</button>
       </nav>
     </div>
   );
