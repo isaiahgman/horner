@@ -2,13 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' https://apis.google.com https://accounts.google.com https://www.google.com https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://accounts.google.com; img-src 'self' data: https://*.googleusercontent.com https://www.gstatic.com; font-src 'self'; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://accounts.google.com https://apis.google.com; frame-src https://horner-next-ten-isaiah.firebaseapp.com https://accounts.google.com https://www.google.com; child-src 'self' blob: https://horner-next-ten-isaiah.firebaseapp.com https://accounts.google.com https://www.google.com; worker-src 'self' blob:; manifest-src 'self'; form-action 'self' https://accounts.google.com; upgrade-insecure-requests"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#f4f1ea" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#141916" media="(prefers-color-scheme: dark)" />
     <meta name="description" content="Your next ten chapters in the Horner reading system." />
-    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="./icon.svg" />
+    <link rel="icon" href="./favicon.ico" sizes="48x48" />
+    <link rel="icon" href="./icon.svg" sizes="any" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon-180x180.png" />
     <title>Next Ten</title>
   </head>
   <body>
