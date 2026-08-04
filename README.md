@@ -39,4 +39,5 @@ services, or phone authentication. The app needs only free Google sign-in and
 the single free Firestore database.
 
 See [the product specification](docs/product-spec.md) for the MVP behavior and
-acceptance criteria.
+acceptance criteria, and [the architecture guide](docs/architecture.md) for the
+state flow, persistence model, security boundaries, and operations.
