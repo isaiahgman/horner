@@ -46,8 +46,11 @@ empty missed sessions. No nightly batch job is needed or desired.
 ## Local and cloud lifecycle
 
 IndexedDB is the primary interaction store: checkbox changes are saved locally
-without waiting for a network response. Firestore protects the small state from
-browser-data clearing or device replacement.
+without waiting for a network response. A compact, synchronous localStorage
+write-ahead journal closes the small page-close window before IndexedDB commits;
+it is revision-checked, replayed at startup when newer, and removed after the
+matching IndexedDB write succeeds. Firestore protects the state from clearing
+all browser data or replacing the device.
 
 Cloud data is scoped below the authenticated user:
 
