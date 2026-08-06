@@ -27,10 +27,12 @@ or create catch-up work because time passed.
 ## Primary experience
 
 The default screen shows "Today," a completed count, and ten large rows in list
-order. Each row has a checkbox, chapter reference, and optional link to the
-reader's preferred Bible site. Checking a row leaves all ten references in
-place for the entire session. A secondary focus mode may present the same fixed
-session one chapter at a time.
+order. Each row has a checkbox and linked chapter reference. On a phone or
+tablet, the link uses YouVersion's ESV HTTPS passage URL so the operating system
+can open the installed Bible app, with Bible.com as the automatic fallback. On
+a desktop or laptop, it opens the chapter on ESV.org in a new tab. Checking a
+row leaves all ten references in place for the entire session. A secondary
+focus mode may present the same fixed session one chapter at a time.
 
 History is secondary. It lists only sessions the reader actually had, shows the
 completed count, and can reveal the ten results. The home screen must not show
@@ -85,6 +87,8 @@ migration.
   4:00 a.m. belongs to the new civil date.
 - Repeated rollover checks within a reading day are idempotent.
 - The engine never advances a cursor solely because multiple dates elapsed.
+- Every phone and tablet chapter link uses the matching YouVersion ESV passage,
+  while desktop and laptop links use the matching ESV.org chapter.
 - The ten bundled sequences have the published lengths: 89, 187, 78, 65, 62,
   150, 31, 249, 250, and 28 chapters.
 - A first Google sign-in uploads existing device progress when no cloud state

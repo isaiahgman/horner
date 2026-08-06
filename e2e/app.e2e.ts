@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
+import { devices, expect, test } from "@playwright/test";
 
 import { expectNoHorizontalOverflow, openToday } from "./helpers.js";
 
@@ -14,6 +14,19 @@ const STARTING_CHAPTERS = [
   "Joshua 24",
   "Isaiah 24",
   "Acts 24",
+] as const;
+
+const STARTING_USFM_CHAPTERS = [
+  "MAT.24",
+  "GEN.24",
+  "1CO.8",
+  "JAS.2",
+  "JOB.24",
+  "PSA.24",
+  "PRO.24",
+  "JOS.24",
+  "ISA.24",
+  "ACT.24",
 ] as const;
 
 test("rapid checkbox taps persist in order across an immediate reload", async ({ page }) => {
@@ -39,7 +52,7 @@ test("rapid checkbox taps persist in order across an immediate reload", async ({
 
   for (const chapter of STARTING_CHAPTERS.slice(0, 6)) {
     await expect(page.getByRole("checkbox", { name: `Mark unread: ${chapter}` })).toBeVisible();
-    await expect(page.getByRole("link", { name: chapter })).toBeVisible();
+    await expect(page.getByRole("link", { name: `Open ${chapter} in YouVersion` })).toBeVisible();
   }
   for (const chapter of STARTING_CHAPTERS.slice(6)) {
     await expect(page.getByRole("checkbox", { name: `Mark read: ${chapter}` })).toBeVisible();
@@ -88,7 +101,65 @@ test("confirmed reset returns to Day 24 and downloads a safety backup", async ({
   await page.getByRole("button", { name: "Today" }).click();
   await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(0);
   for (const chapter of STARTING_CHAPTERS) {
-    await expect(page.getByRole("link", { name: chapter })).toBeVisible();
+    await expect(page.getByRole("link", { name: `Open ${chapter} in YouVersion` })).toBeVisible();
+  }
+});
+
+test("chapter links open YouVersion on mobile and ESV.org on desktop", async ({ browser, page }) => {
+  await openToday(page);
+
+  for (const [index, chapter] of STARTING_CHAPTERS.entries()) {
+    const link = page.getByRole("link", { name: `Open ${chapter} in YouVersion` });
+    await expect(link).toHaveAttribute(
+      "href",
+      `https://www.bible.com/bible/59/${STARTING_USFM_CHAPTERS[index]}.ESV`,
+    );
+    await expect(link).not.toHaveAttribute("target");
+    await expect(link).not.toHaveAttribute("rel");
+    await expect(link).toHaveAttribute("referrerpolicy", "no-referrer");
+  }
+
+  const ipadContext = await browser.newContext({
+    ...devices["iPad Pro 11"],
+    baseURL: "http://127.0.0.1:4173",
+  });
+  try {
+    const ipadPage = await ipadContext.newPage();
+    await openToday(ipadPage);
+    const ipadLink = ipadPage.getByRole("link", {
+      name: "Open Matthew 24 in YouVersion",
+    });
+    await expect(ipadLink).toHaveAttribute(
+      "href",
+      "https://www.bible.com/bible/59/MAT.24.ESV",
+    );
+    await expect(ipadLink).not.toHaveAttribute("target");
+    await expect(ipadLink).toHaveAttribute("referrerpolicy", "no-referrer");
+  } finally {
+    await ipadContext.close();
+  }
+
+  const desktopContext = await browser.newContext({
+    ...devices["Desktop Chrome"],
+    baseURL: "http://127.0.0.1:4173",
+  });
+  try {
+    const desktopPage = await desktopContext.newPage();
+    await openToday(desktopPage);
+    for (const chapter of STARTING_CHAPTERS) {
+      const link = desktopPage.getByRole("link", {
+        name: `Open ${chapter} on ESV.org in a new tab`,
+      });
+      await expect(link).toHaveAttribute(
+        "href",
+        `https://www.esv.org/${chapter.replaceAll(" ", "+")}/`,
+      );
+      await expect(link).toHaveAttribute("target", "_blank");
+      await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+      await expect(link).toHaveAttribute("referrerpolicy", "no-referrer");
+    }
+  } finally {
+    await desktopContext.close();
   }
 });
 

@@ -20,6 +20,7 @@ The layers are deliberately narrow:
 | Local persistence | `src/data/database.ts` | Versioned Dexie/IndexedDB state used immediately and offline |
 | Cloud codec | `src/data/cloud-codec.ts` | Validated compact encoding for the atomic Firestore backup and version 1 migration |
 | Cloud sync | `src/data/cloud.ts` | Google sign-in, server reconciliation, and Firestore's durable offline write queue |
+| Reader links | `src/domain/bible-links.ts` | Validated YouVersion/ESV chapter URLs and phone/tablet detection |
 | UI | `src/App.tsx` | Phone-first list, focus mode, history, settings, and recovery actions |
 | Access control | `firestore.rules` | Owner UID and verified-email enforcement |
 | Deployment | `.github/workflows/deploy-pages.yml` | Tested production build and GitHub Pages publication |
@@ -96,6 +97,23 @@ The Firebase web key in source identifies the public client and is safe to ship;
 it does not grant document access. Do not add service-account material or other
 secrets to the repository. Treat `firestore.rules` as the authorization
 boundary and test access whenever its paths or predicates change.
+
+Security review on 2026-08-06 confirmed that the source value matches the
+active Firebase-created browser key, its allowlist contains only
+Firebase-related APIs, and the Generative Language API is absent. GitHub
+secret-scanning alert #1 for that value is resolved as a false positive. If the
+same public client configuration is flagged again, re-check its live API
+restrictions and the Firestore denial tests; do not rotate or rewrite history
+solely to obscure a value that must be present in the browser bundle. This is
+consistent with [Firebase's API-key guidance](https://firebase.google.com/docs/projects/api-keys).
+
+Chapter links use ordinary HTTPS URLs rather than custom app schemes. On phones
+and tablets, Bible.com passage URLs participate in YouVersion's iOS Universal
+Links and Android App Links, which lets the operating system open the installed
+Bible app and leaves the same URL as a browser fallback. Desktop and laptop
+links use ESV.org in a new tab. Native handoff remains an operating-system and
+user preference; the PWA must not try to detect whether another app is
+installed.
 
 Remain on the Spark plan. Features that can introduce billing or complicate the
 otherwise static architecture require explicit approval. In particular, do not

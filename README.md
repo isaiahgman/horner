@@ -9,6 +9,10 @@ immediately to IndexedDB for offline use and, after Google sign-in, synchronizes
 an owner-private copy to Cloud Firestore so progress survives cleared browser
 data and device changes.
 
+Chapter links open the ESV in the installed YouVersion Bible app on supported
+phones and tablets, falling back to Bible.com when the app is unavailable.
+Desktop and laptop links open ESV.org.
+
 ## Development
 
 ```sh

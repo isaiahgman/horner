@@ -4,11 +4,17 @@ import type { User } from "firebase/auth";
 import { CLOUD_OWNER_EMAIL, isCloudPermissionError } from "./data/cloud-config.js";
 import { loadReadingState, replaceReadingState, saveReadingState } from "./data/database.js";
 import { decideReconciliation } from "./data/reconcile.js";
+import {
+  bibleLinkFor,
+  isMobileOrTablet,
+  type NavigatorLike,
+} from "./domain/bible-links.js";
 import { parseBackupJson, serializeBackup } from "./domain/backup.js";
 import {
   LIST_IDS,
   READING_LIST_BY_ID,
   type ChapterId,
+  type ChapterReference,
   type ListId,
 } from "./domain/lists.js";
 import {
@@ -40,11 +46,10 @@ function loadCloudModule(): Promise<CloudModule> {
   return cloudModulePromise;
 }
 
-function chapterLabel(listId: ListId, chapterId: ChapterId): string {
-  return (
-    READING_LIST_BY_ID[listId].chapters.find(({ id }) => id === chapterId)?.label ??
-    chapterId
-  );
+function chapterReference(listId: ListId, chapterId: ChapterId): ChapterReference {
+  const reference = READING_LIST_BY_ID[listId].chapters.find(({ id }) => id === chapterId);
+  if (!reference) throw new RangeError(`${chapterId} is not part of list ${listId}`);
+  return reference;
 }
 
 function NavIcon({ view }: { readonly view: View }) {
@@ -89,23 +94,23 @@ function formatHour(hour: number): string {
   return `${hour - 12}:00 p.m.`;
 }
 
-function bibleUrl(label: string): string {
-  return `https://www.biblegateway.com/passage/?search=${encodeURIComponent(label)}`;
-}
-
 function SessionRows({
   session,
   interactive,
+  mobileReader,
   onChange,
 }: {
   readonly session: ReadingSession;
   readonly interactive: boolean;
+  readonly mobileReader: boolean;
   readonly onChange?: ((listId: ListId, completed: boolean) => void) | undefined;
 }) {
   return (
     <div className="chapter-list">
       {LIST_IDS.map((listId, index) => {
-        const label = chapterLabel(listId, session.chapters[listId]);
+        const reference = chapterReference(listId, session.chapters[listId]);
+        const label = reference.label;
+        const link = bibleLinkFor(reference, mobileReader);
         const checked = session.completed[listId];
         return (
           <div className={`chapter-row ${checked ? "is-complete" : ""}`} key={listId}>
@@ -122,7 +127,17 @@ function SessionRows({
             </button>
             <div className="chapter-copy">
               <span className="list-name">{index + 1}. {READING_LIST_BY_ID[listId].name}</span>
-              <a href={bibleUrl(label)} target="_blank" rel="noopener noreferrer">{label}</a>
+              <a
+                href={link.href}
+                target={link.target}
+                rel={link.rel}
+                referrerPolicy="no-referrer"
+                aria-label={mobileReader
+                  ? `Open ${label} in YouVersion`
+                  : `Open ${label} on ESV.org in a new tab`}
+              >
+                {label}
+              </a>
             </div>
             <span className="open-arrow" aria-hidden="true">↗</span>
           </div>
@@ -420,6 +435,10 @@ export function App() {
   }, []);
 
   const history = useMemo(() => [...(state?.history ?? [])].reverse(), [state?.history]);
+  const mobileReader = useMemo(
+    () => isMobileOrTablet(navigator as Navigator & NavigatorLike),
+    [],
+  );
 
   if (!state) {
     return <main className="loading">Opening your next ten…</main>;
@@ -580,7 +599,12 @@ export function App() {
               <span aria-hidden="true">{account ? "●" : "○"}</span>
               {syncLabel}
             </div>
-            <SessionRows session={state.activeSession} interactive={!reconciling} onChange={updateToday} />
+            <SessionRows
+              session={state.activeSession}
+              interactive={!reconciling}
+              mobileReader={mobileReader}
+              onChange={updateToday}
+            />
             <p className="quiet-note">Unchecked chapters stay here. Checked chapters advance after the {formatHour(state.settings.rolloverHour)} reading-day boundary.</p>
           </section>
         )}
@@ -600,6 +624,7 @@ export function App() {
                 <SessionRows
                   session={session}
                   interactive={!reconciling && index === 0}
+                  mobileReader={mobileReader}
                   onChange={index === 0 ? (listId, completed) => {
                     try {
                       const current = stateRef.current;
