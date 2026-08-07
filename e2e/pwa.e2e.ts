@@ -80,7 +80,7 @@ test("installed shell reloads from the service worker while offline", async ({ c
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { level: 1, name: "Next Ten" })).toBeVisible();
     await expect(page.getByRole("checkbox")).toHaveCount(10);
-    await expect(page.getByRole("link", { name: "Open Matthew 24 in YouVersion" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Open Matthew 1 in YouVersion" })).toBeVisible();
   } finally {
     await context.setOffline(false);
   }

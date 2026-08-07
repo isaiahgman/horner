@@ -59,7 +59,7 @@ describe("cloud reconciliation", () => {
     expect(result.decision).toBe("local");
     expect(result.upload).toBe(true);
     expect(result.state.activeSession.readingDate).toBe("2026-08-04");
-    expect(result.state.activeSession.chapters.gospels).toBe("matthew:25");
+    expect(result.state.activeSession.chapters.gospels).toBe("matthew:2");
   });
 
   it("compares raw revisions before rolling over the selected copy", () => {
@@ -116,7 +116,7 @@ describe("cloud reconciliation", () => {
 
     expect(rolled.decision).toBe("remote");
     expect(rolled.state.activeSession.readingDate).toBe("2026-08-04");
-    expect(rolled.state.activeSession.chapters.gospels).toBe("matthew:25");
+    expect(rolled.state.activeSession.chapters.gospels).toBe("matthew:2");
     expect(rolled.upload).toBe(true);
     expect(migrated).toEqual({
       state: remote,
@@ -151,6 +151,27 @@ describe("cloud reconciliation", () => {
     expect(keepRemote).toEqual({
       state: remote,
       decision: "conflict",
+      upload: false,
+    });
+  });
+
+  it("keeps an existing cloud profile ahead of guest-derived local progress", () => {
+    const remote = setCompletion(createInitialState(NOW), "acts", true);
+    let guestDerived = setCompletion(createInitialState(NOW), "gospels", true);
+    guestDerived = setCompletion(guestDerived, "psalms", true);
+
+    const result = resolveLoadedCloudState(
+      guestDerived,
+      { state: remote, needsMigration: false },
+      NOW,
+      "local",
+      true,
+    );
+
+    expect(guestDerived.revision).toBeGreaterThan(remote.revision);
+    expect(result).toEqual({
+      state: remote,
+      decision: "remote",
       upload: false,
     });
   });

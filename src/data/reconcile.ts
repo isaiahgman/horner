@@ -46,6 +46,7 @@ export function resolveLoadedCloudState(
   loaded: LoadedCloudState | undefined,
   now: Date,
   conflictChoice: ReconciliationConflictChoice,
+  preferExistingRemote = false,
 ): ResolvedCloudState {
   if (!loaded) {
     return {
@@ -57,7 +58,9 @@ export function resolveLoadedCloudState(
 
   // Compare the stored copies before applying today's rollover. Otherwise an
   // older copy can appear newer solely because it was rolled over first.
-  const decision = decideReconciliation(local, loaded.state);
+  const decision = preferExistingRemote
+    ? "remote"
+    : decideReconciliation(local, loaded.state);
   let selected: ReadingState;
   let upload = loaded.needsMigration;
 

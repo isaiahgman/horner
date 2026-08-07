@@ -4,7 +4,7 @@ export async function openToday(page: Page): Promise<void> {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { level: 1, name: "Next Ten" })).toBeVisible();
   await expect(page.getByRole("checkbox")).toHaveCount(10);
-  await expect(page.getByRole("checkbox", { name: "Mark read: Matthew 24" })).toBeEnabled();
+  await expect(page.getByRole("checkbox", { name: "Mark read: Matthew 1" })).toBeEnabled();
 }
 
 export async function expectNoHorizontalOverflow(page: Page): Promise<void> {

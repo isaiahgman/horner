@@ -28,8 +28,9 @@ in either location.
 - Skipped days produce no sessions, backlog, catch-up count, or missed-day
   warning.
 - Reading dates use the configurable local-time boundary, defaulting to 4 a.m.
-- A fresh installation begins at the verified Day 24 references documented in
-  `docs/product-spec.md`.
+- A fresh guest or account profile begins at Day 1 of every list, as documented
+  in `docs/product-spec.md`. Never reset or overwrite an existing persisted
+  profile merely because this default changes.
 
 Changes to chapter sequences, rollover behavior, or state transitions require
 focused state-machine tests. Keep the reading engine pure: no React, IndexedDB,
@@ -38,16 +39,25 @@ Firebase, browser APIs, or implicit clock access in domain code.
 ## Persistence and security
 
 - IndexedDB is the immediate local store and must continue working offline.
+  Keep guest progress and each Firebase UID in separate local profiles.
 - Firestore is the durable recovery/synchronization copy after Google sign-in.
+  Signing out must switch to the guest profile and hide the signed-in profile
+  from the application UI without deleting it.
 - Firebase web configuration is public client configuration, not a secret.
   Authorization belongs in Authentication and `firestore.rules`.
-- Do not weaken the UID and verified-owner-email restrictions in Firestore
-  rules.
+- Do not weaken the Firestore requirement that a verified Google user may read
+  and write only `/users/{their own uid}`. Keep Firestore's browser cache in
+  memory so an account document is not retained in a shared persistent cache.
 - Preserve validated JSON export/import as an independent recovery path.
 - Keep the project on Firebase Spark. Do not attach billing or enable Cloud
   Functions, Storage, point-in-time recovery, phone authentication, or another
   paid Google Cloud service without the user's explicit approval.
+- Spark supports multiple independent readers but has finite project-wide
+  quotas; never describe it as infinite or design a feature that assumes
+  unbounded reads, writes, accounts, or storage.
 - GitHub Pages hosts the PWA. Firebase Hosting is not part of the architecture.
+- Do not add a nightly rollover job. Rollover is local and demand-driven because
+  elapsed time alone never advances reading progress.
 
 ## Working agreement
 

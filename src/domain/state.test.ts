@@ -66,16 +66,16 @@ describe("reading state machine", () => {
     expect(state.revision).toBe(0);
     expect(Object.values(state.activeSession.chapters)).toHaveLength(10);
     expect(Object.values(state.activeSession.chapters)).toEqual([
-      "matthew:24",
-      "genesis:24",
-      "1-corinthians:8",
-      "james:2",
-      "job:24",
-      "psalm:24",
-      "proverbs:24",
-      "joshua:24",
-      "isaiah:24",
-      "acts:24",
+      "matthew:1",
+      "genesis:1",
+      "romans:1",
+      "1-thessalonians:1",
+      "job:1",
+      "psalm:1",
+      "proverbs:1",
+      "joshua:1",
+      "isaiah:1",
+      "acts:1",
     ]);
     expect(completedCount(state.activeSession)).toBe(0);
   });
@@ -83,7 +83,7 @@ describe("reading state machine", () => {
   it("records completion without replacing the visible chapter", () => {
     const state = createInitialState(localDate("2026-08-03T12:00:00"));
     const checked = toggleCompletion(state, "gospels");
-    expect(checked.activeSession.chapters.gospels).toBe("matthew:24");
+    expect(checked.activeSession.chapters.gospels).toBe("matthew:1");
     expect(checked.activeSession.completed.gospels).toBe(true);
     expect(checked.revision).toBe(1);
     expect(state.activeSession.completed.gospels).toBe(false);
@@ -219,23 +219,23 @@ describe("reading state machine", () => {
     let state = createInitialState(localDate("2026-08-03T12:00:00"));
     state = setCompletion(state, "gospels", true);
     state = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
-    expect(state.activeSession.chapters.gospels).toBe("matthew:25");
+    expect(state.activeSession.chapters.gospels).toBe("matthew:2");
 
     const repaired = setPreviousSessionCompletion(state, "gospels", false);
     expect(repaired.history[0]?.completed.gospels).toBe(false);
-    expect(repaired.activeSession.chapters.gospels).toBe("matthew:24");
+    expect(repaired.activeSession.chapters.gospels).toBe("matthew:1");
     expect(repaired.revision).toBe(state.revision + 1);
   });
 
   it("can add a missed completion and advance the current chapter", () => {
     let state = createInitialState(localDate("2026-08-03T12:00:00"));
     state = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
-    expect(state.activeSession.chapters.gospels).toBe("matthew:24");
+    expect(state.activeSession.chapters.gospels).toBe("matthew:1");
 
     const repaired = setPreviousSessionCompletion(state, "gospels", true);
     expect(repaired.history[0]?.completed.gospels).toBe(true);
-    expect(repaired.activeSession.chapters.gospels).toBe("matthew:25");
-    expect(repaired.cursors.gospels).toBe(cursorForChapter("gospels", "matthew:25"));
+    expect(repaired.activeSession.chapters.gospels).toBe("matthew:2");
+    expect(repaired.cursors.gospels).toBe(cursorForChapter("gospels", "matthew:2"));
   });
 
   it("refuses to change history after its current successor has progress", () => {

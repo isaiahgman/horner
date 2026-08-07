@@ -1,7 +1,15 @@
-export const CLOUD_OWNER_EMAIL = "isaiahgathala@gmail.com";
-
 export class CloudDataError extends Error {
   override readonly name = "CloudDataError";
+}
+
+interface CloudAccountLike {
+  readonly emailVerified: boolean;
+  readonly providerData: readonly { readonly providerId: string }[];
+}
+
+export function isVerifiedGoogleAccount(account: CloudAccountLike): boolean {
+  return account.emailVerified
+    && account.providerData.some(({ providerId }) => providerId === "google.com");
 }
 
 export function isCloudDataError(error: unknown): error is CloudDataError {

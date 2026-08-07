@@ -24,8 +24,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: 21
       - run: npm ci
       - run: npm run check
+      - run: npm install --global firebase-tools@15.26.0
+      - run: npm run test:rules
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e

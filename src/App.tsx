@@ -2,12 +2,29 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import type { User } from "firebase/auth";
 
 import {
-  CLOUD_OWNER_EMAIL,
   isCloudDataError,
   isCloudPermissionError,
+  isVerifiedGoogleAccount,
 } from "./data/cloud-config.js";
 import { watchForCloudRefreshEvents } from "./data/cloud-refresh-events.js";
-import { loadReadingState, replaceReadingState, saveReadingState } from "./data/database.js";
+import {
+  clearExplicitSignInIntent,
+  clearPendingGuestAdoption,
+  claimLegacyReadingState,
+  GUEST_READING_STATE_SCOPE,
+  loadReadingState,
+  readExplicitSignInIntent,
+  readPendingGuestAdoption,
+  readLegacyReadingState,
+  replaceReadingState,
+  saveReadingState,
+  stageExplicitSignInIntent,
+  stagePendingGuestAdoption,
+  userReadingStateScope,
+  type PendingGuestAdoption,
+  type ReadingStateScope,
+  type UserReadingStateScope,
+} from "./data/database.js";
 import {
   decideReconciliation,
   resolveLoadedCloudState,
@@ -41,8 +58,22 @@ import {
 type View = "today" | "history" | "settings";
 type SyncStatus = "local" | "syncing" | "saved" | "offline" | "denied" | "error";
 
+interface ActiveProfileSnapshot {
+  readonly generation: number;
+  readonly scope: ReadingStateScope;
+  readonly userId: string | null;
+}
+
+interface PendingGuestAdoptionGuard {
+  readonly claimToken: string | null;
+  readonly scope: UserReadingStateScope;
+}
+
 const MAX_BACKUP_FILE_BYTES = 16 * 1024 * 1024;
 const CLOUD_OPERATION_TIMEOUT_MS = 15_000;
+// This is only a one-time local-storage migration marker. It is not an access
+// control rule; cloud authorization is UID-scoped in firestore.rules.
+const LEGACY_OWNER_EMAIL = "isaiahgathala@gmail.com";
 
 class CloudOperationTimeoutError extends Error {}
 
@@ -189,6 +220,7 @@ export function App() {
   const [storageError, setStorageError] = useState("");
   const stateRef = useRef<ReadingState | undefined>(undefined);
   const accountRef = useRef<User | null>(null);
+  const storageScopeRef = useRef<ReadingStateScope>(GUEST_READING_STATE_SCOPE);
   const authGenerationRef = useRef(0);
   const cloudWriteRef = useRef(0);
   const localWriteRef = useRef(0);
@@ -200,10 +232,38 @@ export function App() {
   const reconcilingRef = useRef(true);
   const interactionLockCountRef = useRef(1);
   const initialAuthPendingRef = useRef(true);
+  const explicitSignInRef = useRef(false);
+  const authObserverReadyRef = useRef(false);
+  const authObserverUnsubscribeRef = useRef<(() => void) | undefined>(undefined);
+  const authActionRef = useRef<"sign-in" | "sign-out" | undefined>(undefined);
+  const pendingGuestAdoptionRef = useRef<PendingGuestAdoptionGuard | undefined>(undefined);
   const cloudConflictRef = useRef(false);
   const cloudDataErrorRef = useRef(false);
   const mountedRef = useRef(true);
   const importInputRef = useRef<HTMLInputElement>(null);
+
+  const captureActiveProfile = (): ActiveProfileSnapshot => ({
+    generation: authGenerationRef.current,
+    scope: storageScopeRef.current,
+    userId: accountRef.current?.uid ?? null,
+  });
+
+  const isActiveProfile = (profile: ActiveProfileSnapshot): boolean => (
+    mountedRef.current
+    && profile.generation === authGenerationRef.current
+    && profile.scope === storageScopeRef.current
+    && profile.userId === (accountRef.current?.uid ?? null)
+  );
+
+  const clearPendingGuestAdoptionGuard = (
+    scope: UserReadingStateScope,
+    claimToken: string,
+  ) => {
+    const pending = pendingGuestAdoptionRef.current;
+    if (pending?.scope === scope && pending.claimToken === claimToken) {
+      pendingGuestAdoptionRef.current = undefined;
+    }
+  };
 
   const lockInteractions = () => {
     interactionLockCountRef.current += 1;
@@ -236,13 +296,19 @@ export function App() {
   const submitCloudSave = (next: ReadingState) => {
     const user = accountRef.current;
     if (!user || cloudDataErrorRef.current) return;
+    const userScope = userReadingStateScope(user.uid);
+    if (pendingGuestAdoptionRef.current?.scope === userScope) {
+      // Until a server read proves this account is new, guest-derived local
+      // progress must never enter Firestore through an ordinary setDoc.
+      return;
+    }
     const generation = authGenerationRef.current;
     const userId = user.uid;
     const writeId = ++cloudWriteRef.current;
     setSyncStatus(navigator.onLine ? "syncing" : "offline");
 
-    // Submit every write immediately. Firestore can then place every mutation
-    // in its durable offline queue instead of leaving later taps in JS memory.
+    // Submit every write immediately while the page is active. The scoped
+    // IndexedDB copy remains the durable offline source for later retries.
     void withCloudTimeout(loadCloudModule())
       .then((cloud) => cloud.saveCloudState(userId, next))
       .then(() => {
@@ -269,15 +335,22 @@ export function App() {
   };
 
   const submitLocalSave = (next: ReadingState) => {
+    const scope = storageScopeRef.current;
     const writeId = ++localWriteRef.current;
     // IndexedDB transactions are opened immediately and therefore retain
     // invocation order even if React renders several quick taps together.
-    void saveReadingState(next)
+    void saveReadingState(scope, next)
       .then(() => {
-        if (writeId === localWriteRef.current) setStorageError("");
+        if (
+          writeId === localWriteRef.current
+          && scope === storageScopeRef.current
+        ) setStorageError("");
       })
       .catch(() => {
-        if (writeId === localWriteRef.current) {
+        if (
+          writeId === localWriteRef.current
+          && scope === storageScopeRef.current
+        ) {
           setStorageError("This device could not save locally. Keep cloud protection on or export a backup before closing.");
         }
       });
@@ -306,9 +379,11 @@ export function App() {
     requestedUser: User | null = accountRef.current,
   ): Promise<void> => {
     if (!requestedUser) return Promise.resolve();
+    const requestedScope = userReadingStateScope(requestedUser.uid);
     if (
       cloudConflictRef.current ||
-      accountRef.current?.uid !== requestedUser.uid
+      accountRef.current?.uid !== requestedUser.uid ||
+      storageScopeRef.current !== requestedScope
     ) return Promise.resolve();
     if (!navigator.onLine) {
       setSyncStatus("offline");
@@ -329,6 +404,26 @@ export function App() {
     const operation = (async () => {
       try {
         const cloud = await withCloudTimeout(loadCloudModule());
+        if (
+          generation === authGenerationRef.current
+          && accountRef.current?.uid === userId
+          && storageScopeRef.current === requestedScope
+        ) {
+          pendingGuestAdoptionRef.current = {
+            scope: requestedScope,
+            claimToken: null,
+          };
+        }
+        const guestCandidate = await readPendingGuestAdoption(requestedScope);
+        if (
+          !mountedRef.current
+          || generation !== authGenerationRef.current
+          || accountRef.current?.uid !== userId
+          || storageScopeRef.current !== requestedScope
+        ) return;
+        pendingGuestAdoptionRef.current = guestCandidate
+          ? { scope: requestedScope, claimToken: guestCandidate.claimToken }
+          : undefined;
         try {
           await withCloudTimeout(cloud.waitForCloudWrites());
         } catch (error) {
@@ -340,14 +435,20 @@ export function App() {
         if (
           !mountedRef.current ||
           generation !== authGenerationRef.current ||
-          accountRef.current?.uid !== userId
+          accountRef.current?.uid !== userId ||
+          storageScopeRef.current !== requestedScope
         ) return;
 
         const local = stateRef.current;
         if (!local) return;
-        const decision = loaded
-          ? decideReconciliation(local, loaded.state)
-          : "local";
+        // A pending guest adoption may become this account's local state only
+        // when the server has no document. Any existing remote copy wins,
+        // regardless of the guest-derived local revision.
+        const decision = guestCandidate && loaded
+          ? "remote"
+          : loaded
+            ? decideReconciliation(local, loaded.state)
+            : "local";
         const conflictChoice =
           decision === "conflict" && !window.confirm(
             "This device and cloud both have different progress. Press OK to keep this device, or Cancel to restore the cloud copy.",
@@ -359,30 +460,129 @@ export function App() {
           loaded,
           new Date(),
           conflictChoice,
+          Boolean(guestCandidate && loaded),
         );
 
         stateRef.current = resolved.state;
         setState(resolved.state);
+        let savedLocally = false;
         try {
-          await replaceReadingState(resolved.state);
-          setStorageError("");
+          await replaceReadingState(requestedScope, resolved.state);
+          savedLocally = true;
+          if (
+            generation === authGenerationRef.current
+            && storageScopeRef.current === requestedScope
+          ) setStorageError("");
         } catch {
-          setStorageError("Cloud progress opened, but this device could not save its local copy. Export a backup before closing.");
+          if (
+            generation === authGenerationRef.current
+            && storageScopeRef.current === requestedScope
+          ) {
+            setStorageError("Cloud progress opened, but this device could not save its local copy. Export a backup before closing.");
+          }
+        }
+        if (savedLocally && guestCandidate && loaded) {
+          try {
+            const cleared = await clearPendingGuestAdoption(
+              requestedScope,
+              guestCandidate.claimToken,
+            );
+            if (cleared) {
+              clearPendingGuestAdoptionGuard(
+                requestedScope,
+                guestCandidate.claimToken,
+              );
+            }
+          } catch {
+            // A retained candidate is safe. A later reconciliation will see
+            // the account's cloud document and clear it without adopting it.
+          }
         }
         if (
           !mountedRef.current ||
           generation !== authGenerationRef.current ||
-          accountRef.current?.uid !== userId
+          accountRef.current?.uid !== userId ||
+          storageScopeRef.current !== requestedScope
         ) return;
 
         cloudDataErrorRef.current = false;
+        if (guestCandidate && !loaded) {
+          if (!savedLocally) {
+            setSyncStatus("offline");
+            return;
+          }
+
+          const created = await withCloudTimeout(
+            cloud.createCloudStateIfAbsent(userId, resolved.state),
+          );
+          if (created) {
+            try {
+              const cleared = await clearPendingGuestAdoption(
+                requestedScope,
+                guestCandidate.claimToken,
+              );
+              if (cleared) {
+                clearPendingGuestAdoptionGuard(
+                  requestedScope,
+                  guestCandidate.claimToken,
+                );
+              }
+            } catch {
+              // Keeping the marker is safe. The next server read will find
+              // this newly created document and clear it then.
+            }
+            if (
+              generation === authGenerationRef.current
+              && accountRef.current?.uid === userId
+              && storageScopeRef.current === requestedScope
+            ) setSyncStatus("saved");
+            return;
+          }
+
+          // Another device created the account between our read and create.
+          // Re-read it and make that remote copy authoritative before the
+          // guest-adoption marker can be removed.
+          const appeared = await withCloudTimeout(cloud.loadCloudState(userId));
+          if (!appeared) throw new Error("Cloud profile changed during creation");
+          if (
+            !mountedRef.current
+            || generation !== authGenerationRef.current
+            || accountRef.current?.uid !== userId
+            || storageScopeRef.current !== requestedScope
+          ) return;
+
+          const remoteResolved = resolveLoadedCloudState(
+            resolved.state,
+            appeared,
+            new Date(),
+            "remote",
+            true,
+          );
+          stateRef.current = remoteResolved.state;
+          setState(remoteResolved.state);
+          await replaceReadingState(requestedScope, remoteResolved.state);
+          const cleared = await clearPendingGuestAdoption(
+            requestedScope,
+            guestCandidate.claimToken,
+          );
+          if (cleared) {
+            clearPendingGuestAdoptionGuard(
+              requestedScope,
+              guestCandidate.claimToken,
+            );
+          }
+          if (remoteResolved.upload) submitCloudSave(remoteResolved.state);
+          else setSyncStatus("saved");
+          return;
+        }
         if (resolved.upload) submitCloudSave(resolved.state);
         else setSyncStatus("saved");
       } catch (error) {
         if (
           !mountedRef.current ||
           generation !== authGenerationRef.current ||
-          accountRef.current?.uid !== userId
+          accountRef.current?.uid !== userId ||
+          storageScopeRef.current !== requestedScope
         ) return;
         if (isCloudDataError(error)) {
           cloudDataErrorRef.current = true;
@@ -390,10 +590,12 @@ export function App() {
           setMessage("The cloud copy could not be read safely. This device copy was kept and was not uploaded.");
           rolloverLocalState(false);
         } else if (isCloudPermissionError(error)) {
-          accountRef.current = null;
-          setAccount(null);
+          const guestGeneration = ++authGenerationRef.current;
+          cloudWriteRef.current += 1;
+          localWriteRef.current += 1;
           setSyncStatus("denied");
-          setMessage(`Cloud access was denied. Sign in with ${CLOUD_OWNER_EMAIL}.`);
+          setMessage("Cloud access was denied. Your device copy was not uploaded.");
+          void activateGuestProfile(guestGeneration);
           const cloud = await withCloudTimeout(loadCloudModule()).catch(() => undefined);
           void cloud?.signOutOfCloud().catch(() => undefined);
         } else {
@@ -419,75 +621,215 @@ export function App() {
     return operation;
   };
 
+  const beginProfileTransition = () => {
+    // Every transition owns a lock. The separate bootstrap lock is released
+    // exactly once, so a stale initial auth event cannot unlock a newer one.
+    lockInteractions();
+    stateRef.current = undefined;
+    setState(undefined);
+  };
+
+  const finishProfileTransition = () => {
+    unlockInteractions();
+    finishInitialAuthCheck();
+  };
+
+  const activateGuestProfile = async (generation: number): Promise<void> => {
+    if (!mountedRef.current || generation !== authGenerationRef.current) return;
+    beginProfileTransition();
+    accountRef.current = null;
+    cloudDataErrorRef.current = false;
+    pendingGuestAdoptionRef.current = undefined;
+    storageScopeRef.current = GUEST_READING_STATE_SCOPE;
+    setAccount(null);
+    setSyncStatus("local");
+    try {
+      let stored: ReadingState | undefined;
+      try {
+        stored = await loadReadingState(GUEST_READING_STATE_SCOPE);
+      } catch {
+        if (generation === authGenerationRef.current) {
+          setStorageError("Saved guest progress on this device could not be opened. Sign in to restore a cloud copy, or import a JSON backup.");
+        }
+      }
+      if (!mountedRef.current || generation !== authGenerationRef.current) return;
+
+      const base = stored ?? createInitialState(new Date());
+      const current = rolloverIfNeeded(base, new Date());
+      stateRef.current = current;
+      setState(current);
+      if (!stored || current !== stored) {
+        try {
+          await replaceReadingState(GUEST_READING_STATE_SCOPE, current);
+          if (mountedRef.current && generation === authGenerationRef.current) {
+            setStorageError("");
+          }
+        } catch {
+          if (mountedRef.current && generation === authGenerationRef.current) {
+            setStorageError("This device could not save guest progress. Sign in or export a backup before closing.");
+          }
+        }
+      }
+    } finally {
+      finishProfileTransition();
+    }
+  };
+
+  const activateUserProfile = async (
+    user: User,
+    adoptGuestIfNew: boolean,
+    generation: number,
+    explicitSignInIntentToken?: string,
+  ): Promise<void> => {
+    if (!mountedRef.current || generation !== authGenerationRef.current) return;
+    beginProfileTransition();
+    const scope = userReadingStateScope(user.uid);
+    storageScopeRef.current = scope;
+    accountRef.current = user;
+    cloudDataErrorRef.current = false;
+    pendingGuestAdoptionRef.current = { scope, claimToken: null };
+    setAccount(user);
+    setSyncStatus("syncing");
+    setMessage("");
+    try {
+      let current: ReadingState | undefined;
+      let guestCandidate: PendingGuestAdoption | undefined;
+      let storageReadSucceeded = false;
+      try {
+        current = await loadReadingState(scope);
+        if (
+          !current
+          && user.email?.toLowerCase() === LEGACY_OWNER_EMAIL
+        ) {
+          const legacy = await readLegacyReadingState();
+          if (legacy) {
+            current = await claimLegacyReadingState(scope, legacy.claimToken);
+          }
+        }
+        guestCandidate = await readPendingGuestAdoption(scope);
+        if (!current && !guestCandidate && adoptGuestIfNew) {
+          const guest = await loadReadingState(GUEST_READING_STATE_SCOPE)
+            ?? createInitialState(new Date());
+          guestCandidate = await stagePendingGuestAdoption(scope, guest);
+          current = guestCandidate.state;
+        } else if (!current && guestCandidate) {
+          current = guestCandidate.state;
+        }
+        storageReadSucceeded = true;
+      } catch {
+        if (generation === authGenerationRef.current) {
+          setStorageError("Saved progress for this account could not be opened. The cloud copy will be checked before changes are enabled.");
+        }
+      }
+      if (
+        !mountedRef.current
+        || generation !== authGenerationRef.current
+        || accountRef.current?.uid !== user.uid
+        || storageScopeRef.current !== scope
+      ) return;
+
+      if (storageReadSucceeded) {
+        pendingGuestAdoptionRef.current = guestCandidate
+          ? { scope, claimToken: guestCandidate.claimToken }
+          : undefined;
+        if (explicitSignInIntentToken) {
+          clearExplicitSignInIntent(explicitSignInIntentToken);
+        }
+      }
+
+      current ??= createInitialState(new Date());
+      stateRef.current = current;
+      setState(current);
+      try {
+        await replaceReadingState(scope, current);
+        if (generation === authGenerationRef.current) setStorageError("");
+      } catch {
+        if (generation === authGenerationRef.current) {
+          setStorageError("This account's progress could not be saved on this device. Keep cloud protection on or export a backup.");
+        }
+      }
+      if (
+        !mountedRef.current
+        || generation !== authGenerationRef.current
+        || accountRef.current?.uid !== user.uid
+        || storageScopeRef.current !== scope
+      ) return;
+
+      await requestCloudReconciliation(user);
+    } finally {
+      finishProfileTransition();
+    }
+  };
+
+  const handleCloudAccount = (cloud: CloudModule, user: User | null) => {
+    const generation = ++authGenerationRef.current;
+    cloudWriteRef.current += 1;
+    localWriteRef.current += 1;
+    if (cloudConflictRef.current) {
+      cloudConflictRef.current = false;
+      unlockInteractions();
+    }
+    setReloadRequired(false);
+
+    if (!user) {
+      explicitSignInRef.current = false;
+      void activateGuestProfile(generation);
+      return;
+    }
+    if (!isVerifiedGoogleAccount(user)) {
+      explicitSignInRef.current = false;
+      const explicitIntent = readExplicitSignInIntent();
+      if (explicitIntent) clearExplicitSignInIntent(explicitIntent.token);
+      setSyncStatus("denied");
+      setMessage("Cloud protection requires a verified Google account.");
+      void activateGuestProfile(generation);
+      void cloud.signOutOfCloud().catch(() => undefined);
+      return;
+    }
+
+    const explicitIntent = readExplicitSignInIntent();
+    const adoptGuestIfNew = explicitSignInRef.current || Boolean(explicitIntent);
+    explicitSignInRef.current = false;
+    void activateUserProfile(
+      user,
+      adoptGuestIfNew,
+      generation,
+      explicitIntent?.token,
+    );
+  };
+
+  const installCloudAccountObserver = (cloud: CloudModule) => {
+    if (authObserverReadyRef.current) return;
+    authObserverReadyRef.current = true;
+    authObserverUnsubscribeRef.current = cloud.observeCloudAccount((user) => {
+      if (mountedRef.current) handleCloudAccount(cloud, user);
+    });
+  };
+
   useEffect(() => {
     mountedRef.current = true;
     let cancelled = false;
-    let unsubscribe: () => void = () => undefined;
     void (async () => {
-      let current: ReadingState;
-      try {
-        const stored = await loadReadingState();
-        current = stored ?? createInitialState(new Date());
-        if (!stored) submitLocalSave(current);
-      } catch {
-        current = createInitialState(new Date());
-        setStorageError("Saved progress on this device could not be opened. Sign in to restore the cloud copy, or import a JSON backup.");
-      }
-      if (cancelled) return;
-      stateRef.current = current;
-      setState(current);
-
       let cloud: CloudModule;
       try {
         cloud = await withCloudTimeout(loadCloudModule());
       } catch {
-        setSyncStatus("local");
-        rolloverLocalState();
-        finishInitialAuthCheck();
+        if (!cancelled) await activateGuestProfile(authGenerationRef.current);
         return;
       }
       if (cancelled) return;
 
-      unsubscribe = cloud.observeCloudAccount((user) => {
-        authGenerationRef.current += 1;
-        cloudWriteRef.current += 1;
-        if (!user) {
-          accountRef.current = null;
-          cloudDataErrorRef.current = false;
-          setAccount(null);
-          setSyncStatus("local");
-          rolloverLocalState();
-          finishInitialAuthCheck();
-          return;
-        }
-        if (
-          user.email?.toLowerCase() !== CLOUD_OWNER_EMAIL ||
-          !user.emailVerified
-        ) {
-          accountRef.current = null;
-          setAccount(null);
-          setSyncStatus("denied");
-          setMessage(`That Google account is not authorized. Use ${CLOUD_OWNER_EMAIL}.`);
-          rolloverLocalState();
-          void cloud.signOutOfCloud().catch(() => undefined);
-          finishInitialAuthCheck();
-          return;
-        }
-        accountRef.current = user;
-        cloudDataErrorRef.current = false;
-        setAccount(user);
-        setMessage("");
-        setSyncStatus("syncing");
-        finishInitialAuthCheck();
-        void requestCloudReconciliation(user);
-      });
+      installCloudAccountObserver(cloud);
     })();
     return () => {
       cancelled = true;
       mountedRef.current = false;
+      authObserverReadyRef.current = false;
       authGenerationRef.current += 1;
       cloudWriteRef.current += 1;
-      unsubscribe();
+      localWriteRef.current += 1;
+      authObserverUnsubscribeRef.current?.();
+      authObserverUnsubscribeRef.current = undefined;
     };
   }, []);
 
@@ -622,6 +964,7 @@ export function App() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    const profile = captureActiveProfile();
     lockInteractions();
     try {
       if (file.size > MAX_BACKUP_FILE_BYTES) {
@@ -631,37 +974,47 @@ export function App() {
         parseBackupJson(await file.text(), new Date()),
         new Date(),
       );
-      const current = stateRef.current ?? state;
+      if (!isActiveProfile(profile)) return;
+      const current = stateRef.current;
+      if (!current) return;
       downloadBackup(current, "-before-import");
       const imported = rebaseReadingState(importedState, current.revision);
-      await replaceReadingState(imported);
+      await replaceReadingState(profile.scope, imported);
+      if (!isActiveProfile(profile)) return;
       stateRef.current = imported;
       setState(imported);
       setStorageError("");
       submitCloudSave(imported);
       setMessage("Backup restored.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not restore this backup.");
+      if (isActiveProfile(profile)) {
+        setMessage(error instanceof Error ? error.message : "Could not restore this backup.");
+      }
     } finally {
       unlockInteractions();
     }
   };
 
   const reset = async () => {
-    if (!window.confirm("Reset all reading progress and return to Day 24?")) return;
-    const current = stateRef.current ?? state;
+    if (!window.confirm("Reset all reading progress and return to Day 1?")) return;
+    const profile = captureActiveProfile();
+    const current = stateRef.current;
+    if (!current) return;
     lockInteractions();
     try {
       downloadBackup(current, "-before-reset");
       const fresh = resetReadingState(current, new Date());
-      await replaceReadingState(fresh);
+      await replaceReadingState(profile.scope, fresh);
+      if (!isActiveProfile(profile)) return;
       stateRef.current = fresh;
       setState(fresh);
       setStorageError("");
       submitCloudSave(fresh);
-      setMessage("Progress reset to Day 24. A safety backup was downloaded.");
+      setMessage("Progress reset to Day 1. A safety backup was downloaded.");
     } catch {
-      setMessage("Progress could not be reset. Your current reading was left unchanged.");
+      if (isActiveProfile(profile)) {
+        setMessage("Progress could not be reset. Your current reading was left unchanged.");
+      }
     } finally {
       unlockInteractions();
     }
@@ -677,51 +1030,74 @@ export function App() {
   };
 
   const signIn = async () => {
+    if (authActionRef.current || reconcilingRef.current) return;
+    authActionRef.current = "sign-in";
+    lockInteractions();
+    let explicitIntentToken: string | undefined;
     try {
       setMessage("");
       setSyncStatus("syncing");
       const cloud = await withCloudTimeout(loadCloudModule());
+      explicitIntentToken = stageExplicitSignInIntent()?.token;
+      explicitSignInRef.current = true;
       const user = await cloud.signInToCloud();
-      if (
-        user.email?.toLowerCase() !== CLOUD_OWNER_EMAIL ||
-        !user.emailVerified
-      ) {
+      if (!isVerifiedGoogleAccount(user)) {
+        explicitSignInRef.current = false;
+        if (explicitIntentToken) {
+          clearExplicitSignInIntent(explicitIntentToken);
+        }
         await cloud.signOutOfCloud();
         setSyncStatus("denied");
-        setMessage(`That Google account is not authorized. Use ${CLOUD_OWNER_EMAIL}.`);
+        setMessage("Cloud protection requires a verified Google account.");
         return;
       }
-      // Normally the auth observer performs this setup. This fallback also
+      // Normally the auth observer performs the profile switch. This fallback
       // recovers if the cloud module could not load during initial startup.
-      if (accountRef.current?.uid !== user.uid) {
-        authGenerationRef.current += 1;
+      if (!authObserverReadyRef.current) {
+        explicitSignInRef.current = false;
+        const generation = ++authGenerationRef.current;
         cloudWriteRef.current += 1;
-        accountRef.current = user;
-        cloudDataErrorRef.current = false;
-        setAccount(user);
+        localWriteRef.current += 1;
+        await activateUserProfile(
+          user,
+          true,
+          generation,
+          explicitIntentToken,
+        );
+        installCloudAccountObserver(cloud);
       }
-      await requestCloudReconciliation(user);
     } catch (error) {
+      explicitSignInRef.current = false;
+      if (explicitIntentToken && !accountRef.current) {
+        clearExplicitSignInIntent(explicitIntentToken);
+      }
       setSyncStatus("local");
       setMessage(error instanceof Error ? error.message : "Google sign-in did not finish.");
+    } finally {
+      authActionRef.current = undefined;
+      unlockInteractions();
     }
   };
 
   const signOut = async () => {
+    if (authActionRef.current || reconcilingRef.current) return;
+    authActionRef.current = "sign-out";
+    lockInteractions();
     try {
       const cloud = await withCloudTimeout(loadCloudModule());
       await cloud.signOutOfCloud();
-      if (accountRef.current) {
-        authGenerationRef.current += 1;
+      if (!authObserverReadyRef.current) {
+        const generation = ++authGenerationRef.current;
         cloudWriteRef.current += 1;
-        accountRef.current = null;
-        cloudDataErrorRef.current = false;
-        setAccount(null);
-        setSyncStatus("local");
+        localWriteRef.current += 1;
+        await activateGuestProfile(generation);
       }
-      setMessage("Signed out. This device still has its local copy.");
+      setMessage("Signed out. Your account progress is hidden; this device's guest profile is ready.");
     } catch {
       setMessage("Sign-out did not finish. Try again when you are online.");
+    } finally {
+      authActionRef.current = undefined;
+      unlockInteractions();
     }
   };
 
@@ -821,7 +1197,7 @@ export function App() {
                 </>
               ) : (
                 <>
-                  <div><strong>{syncStatus === "denied" ? "Cloud access needs attention." : "Protect your progress."}</strong><p>Sign in with {CLOUD_OWNER_EMAIL} so clearing Safari or changing phones cannot erase your reading history.</p></div>
+                  <div><strong>{syncStatus === "denied" ? "Cloud access needs attention." : "Protect your progress."}</strong><p>Sign in with your Google account so clearing browser data or changing phones does not erase your reading history.</p></div>
                   <button className="primary-button" type="button" onClick={signIn} disabled={reconciling}>{reconciling ? "Checking cloud…" : "Sign in with Google"}</button>
                 </>
               )}
@@ -854,7 +1230,7 @@ export function App() {
               <input ref={importInputRef} hidden type="file" accept="application/json,.json" onChange={importBackup} />
               <button type="button" onClick={requestPersistentStorage}>Request persistent storage</button>
             </div>
-            <button className="danger-button" type="button" onClick={reset} disabled={reconciling}>Reset to Day 24</button>
+            <button className="danger-button" type="button" onClick={reset} disabled={reconciling}>Reset to Day 1</button>
           </section>
         )}
       </main>

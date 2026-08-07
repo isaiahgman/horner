@@ -15,17 +15,17 @@ const MAX_PREFERRED_BIBLE_URL_LENGTH = 2_048;
 
 export type ListRecord<Value> = Record<ListId, Value>;
 
-export const DAY_24_STARTING_CHAPTERS: Readonly<ListRecord<ChapterId>> = {
-  gospels: "matthew:24",
-  pentateuch: "genesis:24",
-  romansToHebrews: "1-corinthians:8",
-  thessaloniansToRevelation: "james:2",
-  wisdom: "job:24",
-  psalms: "psalm:24",
-  proverbs: "proverbs:24",
-  history: "joshua:24",
-  prophets: "isaiah:24",
-  acts: "acts:24",
+export const DAY_ONE_STARTING_CHAPTERS: Readonly<ListRecord<ChapterId>> = {
+  gospels: "matthew:1",
+  pentateuch: "genesis:1",
+  romansToHebrews: "romans:1",
+  thessaloniansToRevelation: "1-thessalonians:1",
+  wisdom: "job:1",
+  psalms: "psalm:1",
+  proverbs: "proverbs:1",
+  history: "joshua:1",
+  prophets: "isaiah:1",
+  acts: "acts:1",
 };
 
 export interface ReadingSession {
@@ -128,7 +128,7 @@ export function createInitialState(
 ): ReadingState {
   const normalizedSettings = normalizeSettings(settings);
   const cursors = listRecord((listId) =>
-    cursorForChapter(listId, DAY_24_STARTING_CHAPTERS[listId]),
+    cursorForChapter(listId, DAY_ONE_STARTING_CHAPTERS[listId]),
   );
   return {
     version: CURRENT_SCHEMA_VERSION,

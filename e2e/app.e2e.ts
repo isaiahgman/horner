@@ -4,29 +4,29 @@ import { devices, expect, test } from "@playwright/test";
 import { expectNoHorizontalOverflow, openToday } from "./helpers.js";
 
 const STARTING_CHAPTERS = [
-  "Matthew 24",
-  "Genesis 24",
-  "1 Corinthians 8",
-  "James 2",
-  "Job 24",
-  "Psalm 24",
-  "Proverbs 24",
-  "Joshua 24",
-  "Isaiah 24",
-  "Acts 24",
+  "Matthew 1",
+  "Genesis 1",
+  "Romans 1",
+  "1 Thessalonians 1",
+  "Job 1",
+  "Psalm 1",
+  "Proverbs 1",
+  "Joshua 1",
+  "Isaiah 1",
+  "Acts 1",
 ] as const;
 
 const STARTING_USFM_CHAPTERS = [
-  "MAT.24",
-  "GEN.24",
-  "1CO.8",
-  "JAS.2",
-  "JOB.24",
-  "PSA.24",
-  "PRO.24",
-  "JOS.24",
-  "ISA.24",
-  "ACT.24",
+  "MAT.1",
+  "GEN.1",
+  "ROM.1",
+  "1TH.1",
+  "JOB.1",
+  "PSA.1",
+  "PRO.1",
+  "JOS.1",
+  "ISA.1",
+  "ACT.1",
 ] as const;
 
 test("rapid checkbox taps persist in order across an immediate reload", async ({ page }) => {
@@ -61,7 +61,7 @@ test("rapid checkbox taps persist in order across an immediate reload", async ({
 
 test("keyboard import restores an exported backup and preserves a safety copy", async ({ page }) => {
   await openToday(page);
-  await page.getByRole("checkbox", { name: "Mark read: Matthew 24" }).click();
+  await page.getByRole("checkbox", { name: "Mark read: Matthew 1" }).click();
   await page.getByRole("button", { name: "Settings" }).click();
 
   const exportedDownloadPromise = page.waitForEvent("download");
@@ -70,7 +70,7 @@ test("keyboard import restores an exported backup and preserves a safety copy", 
   expect(exportedPath).toBeTruthy();
 
   await page.getByRole("button", { name: "Today" }).click();
-  await page.getByRole("checkbox", { name: "Mark unread: Matthew 24" }).click();
+  await page.getByRole("checkbox", { name: "Mark unread: Matthew 1" }).click();
   await page.getByRole("button", { name: "Settings" }).click();
 
   const importButton = page.getByRole("button", { name: "Import JSON backup" });
@@ -84,19 +84,19 @@ test("keyboard import restores an exported backup and preserves a safety copy", 
   await expect(page.getByText("Backup restored.")).toBeVisible();
 
   await page.getByRole("button", { name: "Today" }).click();
-  await expect(page.getByRole("checkbox", { name: "Mark unread: Matthew 24" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Mark unread: Matthew 1" })).toBeVisible();
 });
 
-test("confirmed reset returns to Day 24 and downloads a safety backup", async ({ page }) => {
+test("confirmed reset returns to Day 1 and downloads a safety backup", async ({ page }) => {
   await openToday(page);
-  await page.getByRole("checkbox", { name: "Mark read: Matthew 24" }).click();
+  await page.getByRole("checkbox", { name: "Mark read: Matthew 1" }).click();
   await page.getByRole("button", { name: "Settings" }).click();
 
   page.once("dialog", (dialog) => dialog.accept());
   const safetyDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Reset to Day 24" }).click();
+  await page.getByRole("button", { name: "Reset to Day 1" }).click();
   await safetyDownloadPromise;
-  await expect(page.getByText(/Progress reset to Day 24/)).toBeVisible();
+  await expect(page.getByText(/Progress reset to Day 1/)).toBeVisible();
 
   await page.getByRole("button", { name: "Today" }).click();
   await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(0);
@@ -127,11 +127,11 @@ test("chapter links open YouVersion on mobile and ESV.org on desktop", async ({ 
     const ipadPage = await ipadContext.newPage();
     await openToday(ipadPage);
     const ipadLink = ipadPage.getByRole("link", {
-      name: "Open Matthew 24 in YouVersion",
+      name: "Open Matthew 1 in YouVersion",
     });
     await expect(ipadLink).toHaveAttribute(
       "href",
-      "https://www.bible.com/bible/59/MAT.24.ESV",
+      "https://www.bible.com/bible/59/MAT.1.ESV",
     );
     await expect(ipadLink).not.toHaveAttribute("target");
     await expect(ipadLink).toHaveAttribute("referrerpolicy", "no-referrer");
@@ -167,7 +167,7 @@ for (const colorScheme of ["light", "dark"] as const) {
   test(`${colorScheme} mode has no automated WCAG A/AA violations`, async ({ page }) => {
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
     await openToday(page);
-    await page.getByRole("checkbox", { name: "Mark read: Matthew 24" }).click();
+    await page.getByRole("checkbox", { name: "Mark read: Matthew 1" }).click();
 
     const todayResults = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag22aa"])

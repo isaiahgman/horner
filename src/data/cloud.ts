@@ -13,8 +13,8 @@ import {
   getDocFromServer,
   getDocsFromServer,
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
+  runTransaction,
   serverTimestamp,
   setDoc,
   waitForPendingWrites,
@@ -28,7 +28,7 @@ import {
 } from "./cloud-codec.js";
 import { CloudDataError } from "./cloud-config.js";
 
-export { CLOUD_OWNER_EMAIL, isCloudPermissionError } from "./cloud-config.js";
+export { isCloudPermissionError } from "./cloud-config.js";
 
 const firebaseApp = initializeApp({
   projectId: "horner-next-ten-isaiah",
@@ -40,7 +40,10 @@ const firebaseApp = initializeApp({
 
 const authentication = getAuth(firebaseApp);
 const firestore = initializeFirestore(firebaseApp, {
-  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+  // The app's UID-scoped IndexedDB store is the durable offline copy. Keeping
+  // Firestore's own cache in memory prevents one Google account's document
+  // from remaining in a shared browser cache after sign-out.
+  localCache: memoryLocalCache(),
 });
 
 function userDocument(userId: string) {
@@ -105,6 +108,27 @@ export async function saveCloudState(
   await setDoc(userDocument(userId), {
     ...encodeCloudCurrent(state),
     updatedAt: serverTimestamp(),
+  });
+}
+
+/**
+ * Atomically creates the account document only when it is still absent.
+ * Firestore transactions retry if another device creates it concurrently,
+ * preventing guest-derived progress from overwriting an existing profile.
+ */
+export async function createCloudStateIfAbsent(
+  userId: string,
+  state: ReadingState,
+): Promise<boolean> {
+  const reference = userDocument(userId);
+  return runTransaction(firestore, async (transaction) => {
+    const snapshot = await transaction.get(reference);
+    if (snapshot.exists()) return false;
+    transaction.set(reference, {
+      ...encodeCloudCurrent(state),
+      updatedAt: serverTimestamp(),
+    });
+    return true;
   });
 }
 
