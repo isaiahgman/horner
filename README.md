@@ -4,6 +4,8 @@ A local-first reading companion for Professor Grant Horner's Ten Lists Bible
 Reading System. Progress belongs to ten independent, looping chapter lists;
 calendar time never creates a backlog.
 
+**Live app:** [isaiahgman.github.io/horner](https://isaiahgman.github.io/horner/)
+
 The phone-first PWA starts at Day 24 of the supplied resumed calendar. It saves
 immediately to IndexedDB for offline use and, after Google sign-in, synchronizes
 an owner-private copy to Cloud Firestore so progress survives cleared browser
@@ -13,12 +15,37 @@ Chapter links open the ESV in the installed YouVersion Bible app on supported
 phones and tablets, falling back to Bible.com when the app is unavailable.
 Desktop and laptop links open ESV.org.
 
+## Use on a phone
+
+Open the live app in Safari or Chrome, sign in with the authorized Google
+account, and use the browser's **Add to Home Screen** action to install it. The
+installed PWA works offline after its first successful load and checks for app
+updates whenever it regains focus or becomes visible.
+
+IndexedDB remains the immediate offline store. When signed in and online, the
+app checks Firestore after authentication, on focus or visible resume, and when
+connectivity returns. The newer stored revision wins; equally revised but
+different copies require an explicit choice. Reconciliation happens before
+reading-day rollover, so merely opening an older computer cannot make its copy
+override newer phone progress. There is no nightly job: only completed reading
+advances a list. The sync policy is intended for sequential personal use;
+avoid making changes on two offline devices at the same time.
+
 ## Development
 
 ```sh
 npm install
 npm run check
 npm run dev
+```
+
+Before publishing a code change, also run the production build and browser
+suite:
+
+```sh
+npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
 
 Production builds are deployable to GitHub Pages with the included workflow.
