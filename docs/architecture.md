@@ -31,14 +31,22 @@ network state, or UI state itself.
 
 ## State transition
 
-For each launch or focus event:
+At launch, the app loads the persisted device state without rolling it over and
+holds interaction until Firebase restores the local authentication session. A
+signed-out or offline device then applies the ordinary local rollover. An
+authenticated online device first reads the server, compares the two stored
+copies, selects the newer copy, and only then rolls the selected state forward.
+This order prevents an old computer from appearing newer merely because it was
+opened on a later date.
 
-1. Load the current local state.
-2. Calculate the reading-date key using the configured local rollover hour.
-3. If the key has not changed, keep the active session exactly as shown.
-4. If it changed, archive the prior session, advance each checked cursor once,
+For the selected state:
+
+1. Calculate the reading-date key using the configured local rollover hour.
+2. If the key has not changed, keep the active session exactly as shown.
+3. If it changed, archive the prior session, advance each checked cursor once,
    retain each unchecked cursor, and create one new session for the current key.
-5. Persist locally, render, and queue the authenticated cloud write.
+4. Persist locally, render, and queue an authenticated cloud write when the
+   selected state changed.
 
 The number of civil dates between openings is intentionally ignored. This is
 why reopening after several days creates one session rather than a chain of
@@ -70,11 +78,21 @@ the document shape, reject deletes, and reject non-increasing version 2 writes.
 Synchronization follows these rules:
 
 - If the first sign-in finds no remote state, upload the complete local state.
-- If only one copy has the greater revision, keep that copy. If equally revised
-  copies differ, ask which one to keep and rebase the selected device copy.
+- Compare stored copies before applying a reading-day rollover. If only one
+  copy has the greater revision, keep that copy. If equally revised copies
+  differ, ask which one to keep and rebase the selected device copy.
+- Reconcile after authentication and whenever an authenticated app regains
+  focus, becomes visible, or returns online. Reconciliation is single-flight,
+  blocks reading mutations while it is selecting a copy, waits for this
+  device's queued writes, and ignores results from an obsolete authentication
+  generation.
 - Submit each local mutation to Firestore immediately. This lets Firestore put
   every change in its persistent offline queue; later taps never wait only in
   volatile JavaScript memory.
+- Treat authentication as separate from successful protection: the interface
+  reports syncing or unavailable until a server reconciliation or write
+  succeeds. Invalid cloud data is never mislabeled as offline or overwritten
+  automatically.
 - Import and reset receive a new revision and atomically replace the remote
   recovery document. Reset and import also preserve a downloaded pre-change
   safety copy.
@@ -149,8 +167,10 @@ https://isaiahgman.github.io/horner/
 
 After a new deployment, verify the Pages workflow succeeded, open the live PWA
 on a phone-sized screen, and confirm a signed-in checkbox change reports cloud
-protection. For disaster recovery, sign in with the owner Google account or
-import a previously exported JSON backup.
+protection. The registered PWA checks for a new service worker when the app
+regains focus or becomes visible; the auto-update client activates the new
+worker and reloads an already-running client. For disaster recovery, sign in
+with the owner Google account or import a previously exported JSON backup.
 
 ## Known limitations
 

@@ -85,3 +85,29 @@ test("installed shell reloads from the service worker while offline", async ({ c
     await context.setOffline(false);
   }
 });
+
+test("checks for a service worker update when the app regains focus", async ({ page }) => {
+  await page.addInitScript(() => {
+    const registrationPrototype = ServiceWorkerRegistration.prototype;
+    const originalUpdate = registrationPrototype.update;
+    (window as Window & { __pwaUpdateChecks?: number }).__pwaUpdateChecks = 0;
+    registrationPrototype.update = function update(...args) {
+      const testWindow = window as Window & { __pwaUpdateChecks?: number };
+      testWindow.__pwaUpdateChecks = (testWindow.__pwaUpdateChecks ?? 0) + 1;
+      return originalUpdate.apply(this, args);
+    };
+  });
+
+  await openToday(page);
+  await page.evaluate(async () => navigator.serviceWorker.ready);
+  await page.waitForTimeout(250);
+
+  const checksBeforeFocus = await page.evaluate(
+    () => (window as Window & { __pwaUpdateChecks?: number }).__pwaUpdateChecks ?? 0,
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+
+  await expect.poll(() => page.evaluate(
+    () => (window as Window & { __pwaUpdateChecks?: number }).__pwaUpdateChecks ?? 0,
+  )).toBeGreaterThan(checksBeforeFocus);
+});

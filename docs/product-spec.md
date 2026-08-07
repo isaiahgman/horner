@@ -93,6 +93,9 @@ migration.
   150, 31, 249, 250, and 28 chapters.
 - A first Google sign-in uploads existing device progress when no cloud state
   exists; signing in after local data is cleared restores the cloud state.
+- Returning to a signed-in computer checks the server before allowing another
+  reading mutation; newer phone progress replaces its older device copy, and a
+  date rollover alone cannot make the older copy win.
 - Rapid taps persist in invocation order locally and are submitted immediately
   to Firestore's durable offline queue.
 - A newer signed-out device copy is not silently overwritten by an older cloud

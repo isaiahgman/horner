@@ -26,6 +26,7 @@ import {
   decodeCloudState,
   encodeCloudCurrent,
 } from "./cloud-codec.js";
+import { CloudDataError } from "./cloud-config.js";
 
 export { CLOUD_OWNER_EMAIL, isCloudPermissionError } from "./cloud-config.js";
 
@@ -74,14 +75,27 @@ export async function loadCloudState(userId: string): Promise<LoadedCloudState |
   const currentSnapshot = await getDocFromServer(userDocument(userId));
   if (!currentSnapshot.exists()) return undefined;
   const currentValue = currentSnapshot.data();
-  const needsMigration = cloudStateNeedsMigration(currentValue);
+  let needsMigration: boolean;
+  try {
+    needsMigration = cloudStateNeedsMigration(currentValue);
+  } catch (error) {
+    throw new CloudDataError("Cloud progress uses an unsupported or invalid format.", {
+      cause: error,
+    });
+  }
   const legacySessions = needsMigration
     ? (await getDocsFromServer(legacySessionCollection(userId))).docs.map((snapshot) => snapshot.data())
     : [];
-  return {
-    state: decodeCloudState(currentValue, legacySessions),
-    needsMigration,
-  };
+  try {
+    return {
+      state: decodeCloudState(currentValue, legacySessions),
+      needsMigration,
+    };
+  } catch (error) {
+    throw new CloudDataError("Cloud progress uses an unsupported or invalid format.", {
+      cause: error,
+    });
+  }
 }
 
 export async function saveCloudState(

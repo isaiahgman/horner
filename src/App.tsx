@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import type { User } from "firebase/auth";
 
-import { CLOUD_OWNER_EMAIL, isCloudPermissionError } from "./data/cloud-config.js";
+import {
+  CLOUD_OWNER_EMAIL,
+  isCloudDataError,
+  isCloudPermissionError,
+} from "./data/cloud-config.js";
+import { watchForCloudRefreshEvents } from "./data/cloud-refresh-events.js";
 import { loadReadingState, replaceReadingState, saveReadingState } from "./data/database.js";
-import { decideReconciliation } from "./data/reconcile.js";
+import {
+  decideReconciliation,
+  resolveLoadedCloudState,
+} from "./data/reconcile.js";
 import {
   bibleLinkFor,
   isMobileOrTablet,
@@ -31,18 +39,41 @@ import {
 } from "./domain/state.js";
 
 type View = "today" | "history" | "settings";
-type SyncStatus = "local" | "syncing" | "saved" | "offline" | "denied";
+type SyncStatus = "local" | "syncing" | "saved" | "offline" | "denied" | "error";
 
 const MAX_BACKUP_FILE_BYTES = 16 * 1024 * 1024;
+const CLOUD_OPERATION_TIMEOUT_MS = 15_000;
+
+class CloudOperationTimeoutError extends Error {}
+
+function withCloudTimeout<Value>(operation: Promise<Value>): Promise<Value> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(
+      () => reject(new CloudOperationTimeoutError("Cloud operation timed out")),
+      CLOUD_OPERATION_TIMEOUT_MS,
+    );
+    void operation.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
 
 type CloudModule = typeof import("./data/cloud.js");
 let cloudModulePromise: Promise<CloudModule> | undefined;
 
 function loadCloudModule(): Promise<CloudModule> {
-  cloudModulePromise ??= import("./data/cloud.js").catch((error: unknown) => {
-    cloudModulePromise = undefined;
-    throw error;
-  });
+  cloudModulePromise ??= withCloudTimeout(import("./data/cloud.js"))
+    .catch((error: unknown) => {
+      cloudModulePromise = undefined;
+      throw error;
+    });
   return cloudModulePromise;
 }
 
@@ -161,11 +192,17 @@ export function App() {
   const authGenerationRef = useRef(0);
   const cloudWriteRef = useRef(0);
   const localWriteRef = useRef(0);
+  const activeCloudReconciliationRef = useRef<{
+    readonly generation: number;
+    readonly promise: Promise<void>;
+    readonly userId: string;
+  } | undefined>(undefined);
   const reconcilingRef = useRef(true);
   const interactionLockCountRef = useRef(1);
   const initialAuthPendingRef = useRef(true);
-  const cloudReconcileNeededRef = useRef(false);
   const cloudConflictRef = useRef(false);
+  const cloudDataErrorRef = useRef(false);
+  const mountedRef = useRef(true);
   const importInputRef = useRef<HTMLInputElement>(null);
 
   const lockInteractions = () => {
@@ -198,19 +235,31 @@ export function App() {
 
   const submitCloudSave = (next: ReadingState) => {
     const user = accountRef.current;
-    if (!user) return;
+    if (!user || cloudDataErrorRef.current) return;
+    const generation = authGenerationRef.current;
+    const userId = user.uid;
     const writeId = ++cloudWriteRef.current;
     setSyncStatus(navigator.onLine ? "syncing" : "offline");
 
     // Submit every write immediately. Firestore can then place every mutation
     // in its durable offline queue instead of leaving later taps in JS memory.
-    void loadCloudModule()
-      .then((cloud) => cloud.saveCloudState(user.uid, next))
+    void withCloudTimeout(loadCloudModule())
+      .then((cloud) => cloud.saveCloudState(userId, next))
       .then(() => {
-        if (writeId === cloudWriteRef.current) setSyncStatus("saved");
+        if (
+          writeId === cloudWriteRef.current &&
+          generation === authGenerationRef.current &&
+          accountRef.current?.uid === userId
+        ) {
+          setSyncStatus("saved");
+        }
       })
       .catch((error: unknown) => {
-        if (writeId !== cloudWriteRef.current) return;
+        if (
+          writeId !== cloudWriteRef.current ||
+          generation !== authGenerationRef.current ||
+          accountRef.current?.uid !== userId
+        ) return;
         if (isCloudPermissionError(error)) {
           requireCloudConflictResolution();
         } else {
@@ -242,15 +291,144 @@ export function App() {
     submitCloudSave(next);
   };
 
+  const rolloverLocalState = (queueCloudSave = true) => {
+    const current = stateRef.current;
+    if (!current) return;
+    const next = rolloverIfNeeded(current, new Date());
+    if (next === current) return;
+    stateRef.current = next;
+    setState(next);
+    submitLocalSave(next);
+    if (queueCloudSave) submitCloudSave(next);
+  };
+
+  const requestCloudReconciliation = (
+    requestedUser: User | null = accountRef.current,
+  ): Promise<void> => {
+    if (!requestedUser) return Promise.resolve();
+    if (
+      cloudConflictRef.current ||
+      accountRef.current?.uid !== requestedUser.uid
+    ) return Promise.resolve();
+    if (!navigator.onLine) {
+      setSyncStatus("offline");
+      rolloverLocalState(false);
+      return Promise.resolve();
+    }
+
+    const generation = authGenerationRef.current;
+    const existing = activeCloudReconciliationRef.current;
+    if (
+      existing?.generation === generation &&
+      existing.userId === requestedUser.uid
+    ) return existing.promise;
+
+    lockInteractions();
+    setSyncStatus("syncing");
+    const userId = requestedUser.uid;
+    const operation = (async () => {
+      try {
+        const cloud = await withCloudTimeout(loadCloudModule());
+        try {
+          await withCloudTimeout(cloud.waitForCloudWrites());
+        } catch (error) {
+          if (error instanceof CloudOperationTimeoutError) throw error;
+          // A rejected queued write must not prevent reading the authoritative
+          // server copy. Reconciliation below decides which state survives.
+        }
+        const loaded = await withCloudTimeout(cloud.loadCloudState(userId));
+        if (
+          !mountedRef.current ||
+          generation !== authGenerationRef.current ||
+          accountRef.current?.uid !== userId
+        ) return;
+
+        const local = stateRef.current;
+        if (!local) return;
+        const decision = loaded
+          ? decideReconciliation(local, loaded.state)
+          : "local";
+        const conflictChoice =
+          decision === "conflict" && !window.confirm(
+            "This device and cloud both have different progress. Press OK to keep this device, or Cancel to restore the cloud copy.",
+          )
+            ? "remote"
+            : "local";
+        const resolved = resolveLoadedCloudState(
+          local,
+          loaded,
+          new Date(),
+          conflictChoice,
+        );
+
+        stateRef.current = resolved.state;
+        setState(resolved.state);
+        try {
+          await replaceReadingState(resolved.state);
+          setStorageError("");
+        } catch {
+          setStorageError("Cloud progress opened, but this device could not save its local copy. Export a backup before closing.");
+        }
+        if (
+          !mountedRef.current ||
+          generation !== authGenerationRef.current ||
+          accountRef.current?.uid !== userId
+        ) return;
+
+        cloudDataErrorRef.current = false;
+        if (resolved.upload) submitCloudSave(resolved.state);
+        else setSyncStatus("saved");
+      } catch (error) {
+        if (
+          !mountedRef.current ||
+          generation !== authGenerationRef.current ||
+          accountRef.current?.uid !== userId
+        ) return;
+        if (isCloudDataError(error)) {
+          cloudDataErrorRef.current = true;
+          setSyncStatus("error");
+          setMessage("The cloud copy could not be read safely. This device copy was kept and was not uploaded.");
+          rolloverLocalState(false);
+        } else if (isCloudPermissionError(error)) {
+          accountRef.current = null;
+          setAccount(null);
+          setSyncStatus("denied");
+          setMessage(`Cloud access was denied. Sign in with ${CLOUD_OWNER_EMAIL}.`);
+          const cloud = await withCloudTimeout(loadCloudModule()).catch(() => undefined);
+          void cloud?.signOutOfCloud().catch(() => undefined);
+        } else {
+          setSyncStatus("offline");
+          rolloverLocalState(false);
+        }
+      } finally {
+        const active = activeCloudReconciliationRef.current;
+        if (
+          active?.generation === generation &&
+          active.userId === userId
+        ) {
+          activeCloudReconciliationRef.current = undefined;
+        }
+        unlockInteractions();
+      }
+    })();
+    activeCloudReconciliationRef.current = {
+      generation,
+      promise: operation,
+      userId,
+    };
+    return operation;
+  };
+
   useEffect(() => {
+    mountedRef.current = true;
     let cancelled = false;
     let unsubscribe: () => void = () => undefined;
     void (async () => {
       let current: ReadingState;
       try {
         const stored = await loadReadingState();
-        current = rolloverIfNeeded(stored ?? createInitialState(new Date()), new Date());
-        if (!stored || current !== stored) submitLocalSave(current);
+        current = stored ?? createInitialState(new Date());
+        if (!stored) submitLocalSave(current);
       } catch {
         current = createInitialState(new Date());
         setStorageError("Saved progress on this device could not be opened. Sign in to restore the cloud copy, or import a JSON backup.");
@@ -261,27 +439,27 @@ export function App() {
 
       let cloud: CloudModule;
       try {
-        cloud = await loadCloudModule();
+        cloud = await withCloudTimeout(loadCloudModule());
       } catch {
         setSyncStatus("local");
+        rolloverLocalState();
         finishInitialAuthCheck();
         return;
       }
       if (cancelled) return;
 
       unsubscribe = cloud.observeCloudAccount((user) => {
-        const generation = ++authGenerationRef.current;
+        authGenerationRef.current += 1;
+        cloudWriteRef.current += 1;
         if (!user) {
-          finishInitialAuthCheck();
           accountRef.current = null;
-          cloudReconcileNeededRef.current = false;
+          cloudDataErrorRef.current = false;
           setAccount(null);
           setSyncStatus("local");
-          setState(stateRef.current);
+          rolloverLocalState();
+          finishInitialAuthCheck();
           return;
         }
-        lockInteractions();
-        finishInitialAuthCheck();
         if (
           user.email?.toLowerCase() !== CLOUD_OWNER_EMAIL ||
           !user.emailVerified
@@ -290,109 +468,57 @@ export function App() {
           setAccount(null);
           setSyncStatus("denied");
           setMessage(`That Google account is not authorized. Use ${CLOUD_OWNER_EMAIL}.`);
-          setState(stateRef.current);
+          rolloverLocalState();
           void cloud.signOutOfCloud().catch(() => undefined);
-          unlockInteractions();
+          finishInitialAuthCheck();
           return;
         }
         accountRef.current = user;
+        cloudDataErrorRef.current = false;
         setAccount(user);
-        if (!navigator.onLine) {
-          cloudReconcileNeededRef.current = true;
-          setSyncStatus("offline");
-          setState(stateRef.current);
-          unlockInteractions();
-          return;
-        }
+        setMessage("");
         setSyncStatus("syncing");
-        void (async () => {
-          try {
-            const loaded = await cloud.loadCloudState(user.uid);
-            if (
-              cancelled ||
-              generation !== authGenerationRef.current ||
-              accountRef.current?.uid !== user.uid
-            ) return;
-            cloudReconcileNeededRef.current = false;
-
-            const local = stateRef.current ?? current;
-            let resolved = local;
-            let upload = !loaded;
-            if (loaded) {
-              const remote = rolloverIfNeeded(loaded.state, new Date());
-              const decision = decideReconciliation(local, remote);
-              const keepLocal =
-                decision === "local" ||
-                (decision === "conflict" && window.confirm(
-                  "This device and cloud both have different progress. Press OK to keep this device, or Cancel to restore the cloud copy.",
-                ));
-              if (keepLocal) {
-                if (decision === "conflict") {
-                  resolved = rebaseReadingState(local, remote.revision);
-                }
-                upload = true;
-              } else if (decision === "remote" || decision === "conflict") {
-                resolved = remote;
-              }
-              if (decision === "same") resolved = remote;
-              upload ||= loaded.needsMigration || remote !== loaded.state;
-            }
-
-            stateRef.current = resolved;
-            setState(resolved);
-            try {
-              await replaceReadingState(resolved);
-              setStorageError("");
-            } catch {
-              setStorageError("Cloud progress opened, but this device could not save its local copy. Export a backup before closing.");
-            }
-            if (upload) submitCloudSave(resolved);
-            else setSyncStatus("saved");
-          } catch (error) {
-            if (
-              !cancelled &&
-              generation === authGenerationRef.current
-            ) {
-              setState(stateRef.current);
-              if (isCloudPermissionError(error)) {
-                accountRef.current = null;
-                setAccount(null);
-                setSyncStatus("denied");
-                setMessage(`Cloud access was denied. Sign in with ${CLOUD_OWNER_EMAIL}.`);
-                void cloud.signOutOfCloud().catch(() => undefined);
-              } else {
-                cloudReconcileNeededRef.current = true;
-                setSyncStatus("offline");
-              }
-            }
-          } finally {
-            unlockInteractions();
-          }
-        })();
+        finishInitialAuthCheck();
+        void requestCloudReconciliation(user);
       });
     })();
     return () => {
       cancelled = true;
+      mountedRef.current = false;
+      authGenerationRef.current += 1;
+      cloudWriteRef.current += 1;
       unsubscribe();
     };
   }, []);
 
   useEffect(() => {
-    const refresh = () => {
+    const refreshReadingDate = () => {
       if (reconcilingRef.current) return;
       const current = stateRef.current;
-      if (!current) return;
-      const next = rolloverIfNeeded(current, new Date());
-      if (next !== current) persistState(next);
+      if (!current || rolloverIfNeeded(current, new Date()) === current) return;
+      const user = accountRef.current;
+      if (user && navigator.onLine) {
+        void requestCloudReconciliation(user);
+      } else {
+        rolloverLocalState();
+      }
     };
-    const interval = window.setInterval(refresh, 60_000);
-    const onVisibility = () => { if (!document.hidden) refresh(); };
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", refresh);
+    const interval = window.setInterval(refreshReadingDate, 60_000);
+    const stopRefreshEvents = watchForCloudRefreshEvents({
+      documentTarget: document,
+      refreshCloud: () => void requestCloudReconciliation(accountRef.current),
+      refreshLocal: refreshReadingDate,
+      shouldRefreshCloud: () => Boolean(
+        !reconcilingRef.current &&
+        !cloudConflictRef.current &&
+        accountRef.current &&
+        navigator.onLine,
+      ),
+      windowTarget: window,
+    });
     return () => {
       window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("focus", refresh);
+      stopRefreshEvents();
     };
   }, []);
 
@@ -401,30 +527,38 @@ export function App() {
       if (accountRef.current) setSyncStatus("offline");
     };
     const onOnline = () => {
-      if (!accountRef.current) return;
-      if (cloudReconcileNeededRef.current) {
-        setSyncStatus("syncing");
-        void loadCloudModule()
-          .then((cloud) => cloud.waitForCloudWrites())
-          .catch(() => undefined)
-          .finally(() => window.location.reload());
-        return;
-      }
-      const writeId = cloudWriteRef.current;
+      const user = accountRef.current;
+      if (
+        !user ||
+        cloudConflictRef.current ||
+        (reconcilingRef.current && !activeCloudReconciliationRef.current)
+      ) return;
+      const generation = authGenerationRef.current;
       setSyncStatus("syncing");
-      void loadCloudModule()
-        .then((cloud) => cloud.waitForCloudWrites())
-        .then(() => {
-          if (writeId === cloudWriteRef.current) setSyncStatus("saved");
-        })
-        .catch((error: unknown) => {
-          if (writeId !== cloudWriteRef.current) return;
-          if (isCloudPermissionError(error)) {
-            requireCloudConflictResolution();
-          } else {
-            setSyncStatus("offline");
-          }
-        });
+      void (async () => {
+        if (
+          !mountedRef.current ||
+          !navigator.onLine ||
+          generation !== authGenerationRef.current ||
+          accountRef.current?.uid !== user.uid
+        ) return;
+
+        const active = activeCloudReconciliationRef.current;
+        if (
+          active?.generation === generation &&
+          active.userId === user.uid
+        ) {
+          await active.promise;
+        }
+        if (
+          mountedRef.current &&
+          navigator.onLine &&
+          generation === authGenerationRef.current &&
+          accountRef.current?.uid === user.uid
+        ) {
+          await requestCloudReconciliation(user);
+        }
+      })();
     };
     window.addEventListener("offline", onOffline);
     window.addEventListener("online", onOnline);
@@ -451,15 +585,18 @@ export function App() {
       ? "Checking cloud backup…"
     : account
       ? syncStatus === "syncing"
-        ? "Saving to cloud…"
+        ? "Syncing with cloud…"
         : syncStatus === "offline"
-          ? "Offline — changes will retry"
-          : "Protected in cloud"
+          ? "Signed in — cloud unavailable"
+          : syncStatus === "error"
+            ? "Cloud copy needs attention"
+            : "Protected in cloud"
       : syncStatus === "denied"
         ? "Cloud access denied — check Settings"
         : "Device only — sign in under Settings";
 
   const updateToday = (listId: ListId, completed: boolean) => {
+    if (reconcilingRef.current) return;
     const current = stateRef.current;
     if (current) persistState(setCompletion(current, listId, completed));
   };
@@ -541,9 +678,29 @@ export function App() {
 
   const signIn = async () => {
     try {
+      setMessage("");
       setSyncStatus("syncing");
-      const cloud = await loadCloudModule();
-      await cloud.signInToCloud();
+      const cloud = await withCloudTimeout(loadCloudModule());
+      const user = await cloud.signInToCloud();
+      if (
+        user.email?.toLowerCase() !== CLOUD_OWNER_EMAIL ||
+        !user.emailVerified
+      ) {
+        await cloud.signOutOfCloud();
+        setSyncStatus("denied");
+        setMessage(`That Google account is not authorized. Use ${CLOUD_OWNER_EMAIL}.`);
+        return;
+      }
+      // Normally the auth observer performs this setup. This fallback also
+      // recovers if the cloud module could not load during initial startup.
+      if (accountRef.current?.uid !== user.uid) {
+        authGenerationRef.current += 1;
+        cloudWriteRef.current += 1;
+        accountRef.current = user;
+        cloudDataErrorRef.current = false;
+        setAccount(user);
+      }
+      await requestCloudReconciliation(user);
     } catch (error) {
       setSyncStatus("local");
       setMessage(error instanceof Error ? error.message : "Google sign-in did not finish.");
@@ -552,8 +709,16 @@ export function App() {
 
   const signOut = async () => {
     try {
-      const cloud = await loadCloudModule();
+      const cloud = await withCloudTimeout(loadCloudModule());
       await cloud.signOutOfCloud();
+      if (accountRef.current) {
+        authGenerationRef.current += 1;
+        cloudWriteRef.current += 1;
+        accountRef.current = null;
+        cloudDataErrorRef.current = false;
+        setAccount(null);
+        setSyncStatus("local");
+      }
       setMessage("Signed out. This device still has its local copy.");
     } catch {
       setMessage("Sign-out did not finish. Try again when you are online.");
@@ -592,7 +757,7 @@ export function App() {
             </div>
             <div className="progress-track" aria-hidden="true"><span style={{ width: `${todayCompleted * 10}%` }} /></div>
             <div
-              className={`sync-chip ${account ? "is-cloud" : syncStatus === "denied" ? "is-warning" : ""}`}
+              className={`sync-chip ${account ? "is-cloud" : ""} ${syncStatus === "denied" || syncStatus === "error" ? "is-warning" : ""}`}
               role="status"
               aria-live="polite"
             >
@@ -627,6 +792,7 @@ export function App() {
                   mobileReader={mobileReader}
                   onChange={index === 0 ? (listId, completed) => {
                     try {
+                      if (reconcilingRef.current) return;
                       const current = stateRef.current;
                       if (current) {
                         persistState(setPreviousSessionCompletion(current, listId, completed));
@@ -649,8 +815,8 @@ export function App() {
             <div className={`setting-card cloud-card ${account ? "connected" : ""}`}>
               {account ? (
                 <>
-                  <div><strong>Cloud protection is on.</strong><p>{account.email} · {syncStatus === "syncing" ? "Saving…" : syncStatus === "offline" ? "Offline; changes will retry" : syncStatus === "denied" ? "Another cloud version needs review" : "All changes saved"}</p><p>Only this verified Google account can read the cloud copy.</p></div>
-                  {syncStatus === "offline" && <button type="button" onClick={() => window.location.reload()}>Retry cloud</button>}
+                  <div><strong>{syncStatus === "saved" ? "Cloud protection is on." : "Signed in to cloud."}</strong><p>{account.email} · {syncStatus === "syncing" ? "Checking and saving…" : syncStatus === "offline" ? "Cloud unavailable; device copy is safe" : syncStatus === "error" ? "Cloud copy could not be read; device copy was not uploaded" : syncStatus === "denied" ? "Another cloud version needs review" : "All changes saved"}</p><p>Only this verified Google account can read the cloud copy.</p></div>
+                  {(syncStatus === "offline" || syncStatus === "error") && <button type="button" onClick={() => void requestCloudReconciliation()} disabled={reconciling}>Retry cloud</button>}
                   <button type="button" onClick={signOut} disabled={reconciling}>Sign out</button>
                 </>
               ) : (
