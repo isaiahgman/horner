@@ -473,5 +473,9 @@ test("phone layouts do not overflow horizontally", async ({ page }) => {
     await page.getByRole("button", { name: "Settings" }).click();
     await expect(page.getByRole("heading", { level: 2, name: "Settings" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
+
+    await page.getByRole("button", { name: "Today" }).click();
+    await page.getByRole("checkbox", { name: "Mark unread: Matthew 1" }).click();
+    await expect(page.getByRole("checkbox", { name: "Mark read: Matthew 1" })).toBeEnabled();
   }
 });
