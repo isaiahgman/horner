@@ -26,7 +26,7 @@ function isFreshLocalState(state: ReadingState): boolean {
   return (
     state.revision === 0 &&
     state.history.length === 0 &&
-    Object.values(state.activeSession.completed).every((completed) => !completed)
+    Object.values(state.activeSession.completedCounts).every((count) => count === 0)
   );
 }
 

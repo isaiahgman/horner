@@ -2,7 +2,9 @@
 
 A local-first reading companion for Professor Grant Horner's Ten Lists Bible
 Reading System. Progress belongs to ten independent, looping chapter lists;
-calendar time never creates a backlog.
+calendar time never creates a backlog. The ten daily chapters remain a fixed
+milestone, while any consecutive same-day reading beyond them is tracked
+separately for each list.
 
 **Live app:** [isaiahgman.github.io/horner](https://isaiahgman.github.io/horner/)
 
@@ -58,6 +60,12 @@ npx playwright install chromium
 npm run test:e2e
 npm run test:rules # requires Java 21
 ```
+
+The Playwright suite serves the production bundle locally and uses the real
+guest IndexedDB/localStorage persistence path. GitHub Actions repeats these
+checks, including the Firestore emulator suite, before Pages deploys. A separate
+QA site is not currently required; production gets only a brief signed-in cloud
+smoke test after the gated deployment.
 
 Production builds are deployable to GitHub Pages with the included workflow.
 The hosted files contain no personal reading data. Firestore documents live

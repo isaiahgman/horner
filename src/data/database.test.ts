@@ -1,12 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { encodeCloudCurrent } from "./cloud-codec.js";
-import { createInitialState, setCompletion } from "../domain/state.js";
-import type { ReadingState } from "../domain/state.js";
+import { LIST_IDS } from "../domain/lists.js";
+import {
+  completeNextAdditionalChapter,
+  createInitialState,
+  setCompletion,
+} from "../domain/state.js";
+import type { ReadingSession, ReadingState } from "../domain/state.js";
 
 const dexieMock = vi.hoisted(() => ({
   records: new Map<string, { id: string; state: unknown }>(),
   failNextPut: false,
+  versions: [] as number[],
 }));
 
 vi.mock("dexie", () => {
@@ -31,7 +37,8 @@ vi.mock("dexie", () => {
   class MockDexie {
     appState: typeof table | undefined;
 
-    version(_version: number) {
+    version(version: number) {
+      dexieMock.versions.push(version);
       return {
         stores: (_schema: Record<string, string>) => {
           this.appState = table;
@@ -77,8 +84,9 @@ import {
 
 const EXPLICIT_SIGN_IN_INTENT_KEY = "horner-next-ten-explicit-sign-in-v1";
 const LEGACY_PENDING_STATE_KEY = "horner-next-ten-pending-v2";
-const GUEST_PENDING_STATE_KEY = "horner-next-ten-pending-v3:guest";
-const USER_PENDING_STATE_KEY = "horner-next-ten-pending-v3:uid:firebase-user_1";
+const PREVIOUS_GUEST_PENDING_STATE_KEY = "horner-next-ten-pending-v3:guest";
+const GUEST_PENDING_STATE_KEY = "horner-next-ten-pending-v4:guest";
+const USER_PENDING_STATE_KEY = "horner-next-ten-pending-v4:uid:firebase-user_1";
 
 class MemoryStorage implements Storage {
   readonly values = new Map<string, string>();
@@ -120,6 +128,43 @@ function stateAt(revision: number): ReadingState {
     throw new Error(`Test fixture produced revision ${state.revision}, not ${revision}`);
   }
   return state;
+}
+
+function completedMask(session: ReadingSession): number {
+  return LIST_IDS.reduce(
+    (mask, listId, index) =>
+      mask | (session.completedCounts[listId] > 0 ? 1 << index : 0),
+    0,
+  );
+}
+
+function previousJournalValue(state: ReadingState): string {
+  return JSON.stringify({
+    schemaVersion: 2,
+    revision: state.revision,
+    cursorIndexes: LIST_IDS.map((listId) => state.cursors[listId]),
+    activeReadingDate: state.activeSession.readingDate,
+    activeCompletedMask: completedMask(state.activeSession),
+    rolloverHour: state.settings.rolloverHour,
+    preferredBibleUrl: state.settings.preferredBibleUrl ?? null,
+    history: [],
+  });
+}
+
+function domainVersion1State(state: ReadingState): unknown {
+  const legacySession = (session: ReadingSession) => ({
+    readingDate: session.readingDate,
+    chapters: session.chapters,
+    completed: Object.fromEntries(
+      LIST_IDS.map((listId) => [listId, session.completedCounts[listId] > 0]),
+    ),
+  });
+  return {
+    ...state,
+    version: 1,
+    activeSession: legacySession(state.activeSession),
+    history: state.history.map(legacySession),
+  };
 }
 
 beforeEach(() => {
@@ -212,6 +257,10 @@ describe("cross-tab explicit sign-in intent", () => {
 });
 
 describe("reading-state scopes", () => {
+  it("opens physical IndexedDB version 2 as a mixed-client write barrier", () => {
+    expect(dexieMock.versions).toEqual([1, 2]);
+  });
+
   it("constructs user scopes and rejects empty, control, and path-like UIDs", async () => {
     expect(userReadingStateScope("firebase-user_1")).toBe("user:firebase-user_1");
     expect(() => userReadingStateScope("")).toThrow(TypeError);
@@ -255,6 +304,142 @@ describe("reading-state scopes", () => {
     expect(localStorage.getItem(USER_PENDING_STATE_KEY)).toBeNull();
     expect(await loadReadingState(GUEST_READING_STATE_SCOPE)).toEqual(guest);
     expect(await loadReadingState(userScope)).toEqual(user);
+    expect(localStorage.getItem(GUEST_PENDING_STATE_KEY)).toBeNull();
+  });
+
+  it("recovers the previous v3 journal namespace and writes through to IndexedDB", async () => {
+    const pending = stateAt(2);
+    localStorage.setItem(
+      PREVIOUS_GUEST_PENDING_STATE_KEY,
+      previousJournalValue(pending),
+    );
+
+    expect(await loadReadingState(GUEST_READING_STATE_SCOPE)).toEqual(pending);
+    expect(dexieMock.records.get("guest")?.state).toEqual(pending);
+    expect(localStorage.getItem(PREVIOUS_GUEST_PENDING_STATE_KEY)).toBeNull();
+    expect(localStorage.getItem(GUEST_PENDING_STATE_KEY)).toBeNull();
+  });
+
+  it("accepts a newer v3 journal while IndexedDB still uses domain v1", async () => {
+    const legacyStored = stateAt(1);
+    const pending = stateAt(2);
+    dexieMock.records.set("guest", {
+      id: "guest",
+      state: domainVersion1State(legacyStored),
+    });
+    localStorage.setItem(
+      PREVIOUS_GUEST_PENDING_STATE_KEY,
+      previousJournalValue(pending),
+    );
+
+    expect(await loadReadingState(GUEST_READING_STATE_SCOPE)).toEqual(pending);
+    expect(dexieMock.records.get("guest")?.state).toEqual(pending);
+    expect(localStorage.getItem(PREVIOUS_GUEST_PENDING_STATE_KEY)).toBeNull();
+  });
+
+  it("does not let a higher-revision v3 mask journal erase durable additional counts", async () => {
+    let durable = setCompletion(
+      createInitialState(new Date("2026-08-03T12:00:00")),
+      "gospels",
+      true,
+    );
+    durable = completeNextAdditionalChapter(durable, "gospels");
+    dexieMock.records.set("guest", { id: "guest", state: durable });
+    localStorage.setItem(
+      PREVIOUS_GUEST_PENDING_STATE_KEY,
+      previousJournalValue({ ...durable, revision: 99 }),
+    );
+
+    const loaded = await loadReadingState(GUEST_READING_STATE_SCOPE);
+    expect(loaded).toEqual(durable);
+    expect(loaded?.activeSession.completedCounts.gospels).toBe(2);
+    expect(dexieMock.records.get("guest")?.state).toEqual(durable);
+    expect(localStorage.getItem(PREVIOUS_GUEST_PENDING_STATE_KEY)).toBeNull();
+  });
+
+  it("keeps v4 journal authority over current IndexedDB at an equal revision", async () => {
+    const initial = createInitialState(new Date("2026-08-03T12:00:00"));
+    const stored = setCompletion(initial, "gospels", true);
+    const pending = setCompletion(initial, "acts", true);
+    dexieMock.records.set("guest", { id: "guest", state: stored });
+    localStorage.setItem(
+      PREVIOUS_GUEST_PENDING_STATE_KEY,
+      previousJournalValue({ ...stored, revision: 99 }),
+    );
+    localStorage.setItem(
+      GUEST_PENDING_STATE_KEY,
+      JSON.stringify(encodeCloudCurrent(pending)),
+    );
+
+    expect(await loadReadingState(GUEST_READING_STATE_SCOPE)).toEqual(pending);
+    expect(dexieMock.records.get("guest")?.state).toEqual(pending);
+    expect(localStorage.getItem(PREVIOUS_GUEST_PENDING_STATE_KEY)).toBeNull();
+    expect(localStorage.getItem(GUEST_PENDING_STATE_KEY)).toBeNull();
+  });
+
+  it("recovers the highest revision across previous and current journals", async () => {
+    const previous = stateAt(2);
+    const current = stateAt(1);
+    localStorage.setItem(
+      PREVIOUS_GUEST_PENDING_STATE_KEY,
+      previousJournalValue(previous),
+    );
+    localStorage.setItem(
+      GUEST_PENDING_STATE_KEY,
+      JSON.stringify(encodeCloudCurrent(current)),
+    );
+
+    expect(await loadReadingState(GUEST_READING_STATE_SCOPE)).toEqual(previous);
+    expect(dexieMock.records.get("guest")?.state).toEqual(previous);
+    expect(localStorage.getItem(PREVIOUS_GUEST_PENDING_STATE_KEY)).toBeNull();
+    expect(localStorage.getItem(GUEST_PENDING_STATE_KEY)).toBeNull();
+  });
+
+  it("prefers the current journal format for an equal-revision divergence", async () => {
+    const initial = createInitialState(new Date("2026-08-03T12:00:00"));
+    const previous = setCompletion(initial, "gospels", true);
+    const current = setCompletion(initial, "acts", true);
+    localStorage.setItem(
+      PREVIOUS_GUEST_PENDING_STATE_KEY,
+      previousJournalValue(previous),
+    );
+    localStorage.setItem(
+      GUEST_PENDING_STATE_KEY,
+      JSON.stringify(encodeCloudCurrent(current)),
+    );
+
+    expect(await loadReadingState(GUEST_READING_STATE_SCOPE)).toEqual(current);
+    expect(dexieMock.records.get("guest")?.state).toEqual(current);
+    expect(localStorage.getItem(PREVIOUS_GUEST_PENDING_STATE_KEY)).toBeNull();
+    expect(localStorage.getItem(GUEST_PENDING_STATE_KEY)).toBeNull();
+  });
+
+  it("best-effort writes a normalized domain v1 record through to IndexedDB", async () => {
+    const current = stateAt(1);
+    dexieMock.records.set("guest", {
+      id: "guest",
+      state: domainVersion1State(current),
+    });
+
+    expect(await loadReadingState(GUEST_READING_STATE_SCOPE)).toEqual(current);
+    expect(dexieMock.records.get("guest")?.state).toEqual(current);
+    expect(localStorage.getItem(GUEST_PENDING_STATE_KEY)).toBeNull();
+  });
+
+  it("retains a v4 journal when domain migration write-through fails", async () => {
+    const current = stateAt(1);
+    dexieMock.records.set("guest", {
+      id: "guest",
+      state: domainVersion1State(current),
+    });
+    dexieMock.failNextPut = true;
+
+    expect(await loadReadingState(GUEST_READING_STATE_SCOPE)).toEqual(current);
+    expect(localStorage.getItem(GUEST_PENDING_STATE_KEY)).not.toBeNull();
+    expect(dexieMock.records.get("guest")?.state).toEqual(domainVersion1State(current));
+
+    expect(await loadReadingState(GUEST_READING_STATE_SCOPE)).toEqual(current);
+    expect(dexieMock.records.get("guest")?.state).toEqual(current);
     expect(localStorage.getItem(GUEST_PENDING_STATE_KEY)).toBeNull();
   });
 });

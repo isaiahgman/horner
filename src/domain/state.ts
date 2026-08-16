@@ -4,12 +4,14 @@ import {
   LIST_IDS,
   READING_LIST_BY_ID,
   type ChapterId,
+  type ChapterReference,
   type ListId,
 } from "./lists.js";
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 export const DEFAULT_ROLLOVER_HOUR = 4;
 export const MAX_READING_HISTORY_SESSIONS = 10_000;
+export const MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION = 1_023;
 
 const MAX_PREFERRED_BIBLE_URL_LENGTH = 2_048;
 
@@ -31,7 +33,12 @@ export const DAY_ONE_STARTING_CHAPTERS: Readonly<ListRecord<ChapterId>> = {
 export interface ReadingSession {
   readonly readingDate: string;
   readonly chapters: Readonly<ListRecord<ChapterId>>;
-  readonly completed: Readonly<ListRecord<boolean>>;
+  /**
+   * Contiguous chapters completed from each session's fixed starting chapter.
+   * Zero leaves the core chapter unread, one completes only that chapter, and
+   * larger values include additional consecutive chapters from the same list.
+   */
+  readonly completedCounts: Readonly<ListRecord<number>>;
 }
 
 export interface ReadingSettings {
@@ -118,7 +125,7 @@ export function createSession(
   return {
     readingDate,
     chapters: listRecord((listId) => chapterAt(listId, cursors[listId]).id),
-    completed: listRecord(() => false),
+    completedCounts: listRecord(() => 0),
   };
 }
 
@@ -148,34 +155,174 @@ export function setCompletion(
   listId: ListId,
   completed: boolean,
 ): ReadingState {
-  if (state.activeSession.completed[listId] === completed) {
+  const currentCount = state.activeSession.completedCounts[listId];
+  if ((currentCount > 0) === completed) {
     return state;
+  }
+  if (!completed && currentCount > 1) {
+    throw new Error(
+      "Cannot mark the core chapter unread while additional chapters are completed",
+    );
   }
   return {
     ...state,
     revision: nextRevision(state.revision),
     activeSession: {
       ...state.activeSession,
-      completed: { ...state.activeSession.completed, [listId]: completed },
+      completedCounts: {
+        ...state.activeSession.completedCounts,
+        [listId]: completed ? 1 : 0,
+      },
     },
   };
 }
 
 export function toggleCompletion(state: ReadingState, listId: ListId): ReadingState {
-  return setCompletion(state, listId, !state.activeSession.completed[listId]);
+  return setCompletion(state, listId, !coreCompleted(state.activeSession, listId));
+}
+
+export function coreCompleted(session: ReadingSession, listId: ListId): boolean {
+  return session.completedCounts[listId] > 0;
 }
 
 export function completedCount(session: ReadingSession): number {
-  return LIST_IDS.filter((listId) => session.completed[listId]).length;
+  return LIST_IDS.filter((listId) => coreCompleted(session, listId)).length;
+}
+
+export function totalCompletedCount(session: ReadingSession): number {
+  return LIST_IDS.reduce(
+    (total, listId) => total + session.completedCounts[listId],
+    0,
+  );
+}
+
+export function additionalCompletedCount(session: ReadingSession): number;
+export function additionalCompletedCount(
+  session: ReadingSession,
+  listId: ListId,
+): number;
+export function additionalCompletedCount(
+  session: ReadingSession,
+  listId?: ListId,
+): number {
+  if (listId !== undefined) {
+    return Math.max(0, session.completedCounts[listId] - 1);
+  }
+  return LIST_IDS.reduce(
+    (total, currentListId) =>
+      total + Math.max(0, session.completedCounts[currentListId] - 1),
+    0,
+  );
+}
+
+function assertCompletedCount(count: number): void {
+  if (
+    !Number.isSafeInteger(count) ||
+    count < 0 ||
+    count > MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION
+  ) {
+    throw new RangeError(
+      `completed count must be an integer from 0 through ${MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION}`,
+    );
+  }
+}
+
+function assertOffset(offset: number): void {
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new RangeError("chapter offset must be a nonnegative safe integer");
+  }
+}
+
+export function chapterAtOffset(
+  session: ReadingSession,
+  listId: ListId,
+  offset: number,
+): ChapterReference {
+  assertOffset(offset);
+  const startingCursor = cursorForChapter(listId, session.chapters[listId]);
+  const listLength = READING_LIST_BY_ID[listId].chapters.length;
+  return chapterAt(listId, (startingCursor + (offset % listLength)) % listLength);
+}
+
+export function nextAdditionalChapters(
+  session: ReadingSession,
+  listId: ListId,
+  limit = 3,
+): readonly ChapterReference[] {
+  if (!Number.isSafeInteger(limit) || limit < 0) {
+    throw new RangeError("chapter preview limit must be a nonnegative safe integer");
+  }
+  const completed = session.completedCounts[listId];
+  if (completed === 0 || completed >= MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION) {
+    return [];
+  }
+  const available = Math.min(
+    limit,
+    MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION - completed,
+  );
+  return Array.from({ length: available }, (_, index) =>
+    chapterAtOffset(session, listId, completed + index),
+  );
+}
+
+function setActiveSessionCompletedCount(
+  state: ReadingState,
+  listId: ListId,
+  count: number,
+): ReadingState {
+  assertCompletedCount(count);
+  if (state.activeSession.completedCounts[listId] === count) return state;
+  return {
+    ...state,
+    revision: nextRevision(state.revision),
+    activeSession: {
+      ...state.activeSession,
+      completedCounts: {
+        ...state.activeSession.completedCounts,
+        [listId]: count,
+      },
+    },
+  };
+}
+
+export function completeNextAdditionalChapter(
+  state: ReadingState,
+  listId: ListId,
+  expectedCompletedCount?: number,
+): ReadingState {
+  const currentCount = state.activeSession.completedCounts[listId];
+  if (expectedCompletedCount !== undefined) {
+    assertCompletedCount(expectedCompletedCount);
+    if (expectedCompletedCount !== currentCount) return state;
+  }
+  if (currentCount === 0) {
+    throw new Error("Complete the core chapter before reading additional chapters");
+  }
+  if (currentCount === MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION) {
+    throw new RangeError("The per-list reading limit has been reached for this session");
+  }
+  return setActiveSessionCompletedCount(state, listId, currentCount + 1);
+}
+
+export function undoLastAdditionalChapter(
+  state: ReadingState,
+  listId: ListId,
+  expectedCompletedCount?: number,
+): ReadingState {
+  const currentCount = state.activeSession.completedCounts[listId];
+  if (expectedCompletedCount !== undefined) {
+    assertCompletedCount(expectedCompletedCount);
+    if (expectedCompletedCount !== currentCount) return state;
+  }
+  if (currentCount <= 1) return state;
+  return setActiveSessionCompletedCount(state, listId, currentCount - 1);
 }
 
 function advanceCompletedCursors(state: ReadingState): ListRecord<number> {
   return listRecord((listId) => {
-    if (!state.activeSession.completed[listId]) {
-      return state.cursors[listId];
-    }
+    const completed = state.activeSession.completedCounts[listId];
     const listLength = READING_LIST_BY_ID[listId].chapters.length;
-    return (state.cursors[listId] + 1) % listLength;
+    return (state.cursors[listId] + (completed % listLength)) % listLength;
   });
 }
 
@@ -202,7 +349,7 @@ export function undoLastRollover(state: ReadingState): ReadingState {
   if (!previousSession) {
     return state;
   }
-  if (completedCount(state.activeSession) > 0) {
+  if (totalCompletedCount(state.activeSession) > 0) {
     throw new Error("Cannot undo a rollover after the new session has progress");
   }
 
@@ -224,19 +371,39 @@ export function setPreviousSessionCompletion(
   completed: boolean,
 ): ReadingState {
   const previousSession = state.history.at(-1);
-  if (!previousSession || previousSession.completed[listId] === completed) {
+  if (!previousSession) {
     return state;
   }
-  if (state.activeSession.completed[listId]) {
+  const previousCount = previousSession.completedCounts[listId];
+  if ((previousCount > 0) === completed) return state;
+  if (!completed && previousCount > 1) {
+    throw new Error(
+      "Cannot mark the core chapter unread while additional chapters are completed",
+    );
+  }
+  return setPreviousSessionCompletedCount(state, listId, completed ? 1 : 0);
+}
+
+export function setPreviousSessionCompletedCount(
+  state: ReadingState,
+  listId: ListId,
+  count: number,
+): ReadingState {
+  assertCompletedCount(count);
+  const previousSession = state.history.at(-1);
+  if (!previousSession || previousSession.completedCounts[listId] === count) {
+    return state;
+  }
+  if (state.activeSession.completedCounts[listId] > 0) {
     throw new Error("Cannot change the previous chapter after its successor has progress");
   }
 
   const previousCursor = cursorForChapter(listId, previousSession.chapters[listId]);
   const listLength = READING_LIST_BY_ID[listId].chapters.length;
-  const cursor = completed ? (previousCursor + 1) % listLength : previousCursor;
+  const cursor = (previousCursor + (count % listLength)) % listLength;
   const updatedPrevious: ReadingSession = {
     ...previousSession,
-    completed: { ...previousSession.completed, [listId]: completed },
+    completedCounts: { ...previousSession.completedCounts, [listId]: count },
   };
   return {
     ...state,

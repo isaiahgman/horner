@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  completeNextAdditionalChapter,
   createInitialState,
   rolloverIfNeeded,
   setCompletion,
@@ -76,7 +77,7 @@ describe("cloud reconciliation", () => {
     expect(local.revision).toBe(remote.revision);
     expect(result.decision).toBe("conflict");
     expect(result.state.activeSession.readingDate).toBe("2026-08-04");
-    expect(result.state.activeSession.completed.acts).toBe(false);
+    expect(result.state.activeSession.completedCounts.acts).toBe(0);
     expect(result.state.revision).toBe(2);
     expect(result.upload).toBe(true);
   });
@@ -143,8 +144,8 @@ describe("cloud reconciliation", () => {
     );
 
     expect(keepLocal.decision).toBe("conflict");
-    expect(keepLocal.state.activeSession.completed.gospels).toBe(true);
-    expect(keepLocal.state.activeSession.completed.acts).toBe(false);
+    expect(keepLocal.state.activeSession.completedCounts.gospels).toBe(1);
+    expect(keepLocal.state.activeSession.completedCounts.acts).toBe(0);
     expect(keepLocal.state.revision).toBe(2);
     expect(keepLocal.upload).toBe(true);
 
@@ -174,5 +175,22 @@ describe("cloud reconciliation", () => {
       decision: "remote",
       upload: false,
     });
+  });
+
+  it("treats divergent additional progress as a conflict instead of merging counts", () => {
+    const base = setCompletion(createInitialState(NOW), "gospels", true);
+    const local = completeNextAdditionalChapter(base, "gospels");
+    const remote = setCompletion(base, "acts", true);
+
+    expect(local.revision).toBe(remote.revision);
+    expect(decideReconciliation(local, remote)).toBe("conflict");
+    const resolved = resolveLoadedCloudState(
+      local,
+      { state: remote, needsMigration: false },
+      NOW,
+      "remote",
+    );
+    expect(resolved.state.activeSession.completedCounts.gospels).toBe(1);
+    expect(resolved.state.activeSession.completedCounts.acts).toBe(1);
   });
 });

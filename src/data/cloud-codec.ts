@@ -6,6 +6,7 @@ import {
 } from "../domain/lists.js";
 import {
   CURRENT_SCHEMA_VERSION,
+  MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION,
   MAX_READING_HISTORY_SESSIONS,
   type ListRecord,
   type ReadingSession,
@@ -15,16 +16,21 @@ import {
 import { normalizeReadingState } from "../domain/backup.js";
 
 const LEGACY_CLOUD_SCHEMA_VERSION = 1;
-export const CLOUD_SCHEMA_VERSION = 2;
+const PREVIOUS_CLOUD_SCHEMA_VERSION = 2;
+export const CLOUD_SCHEMA_VERSION = 3;
 export const MAX_CLOUD_HISTORY_SESSIONS = MAX_READING_HISTORY_SESSIONS;
-const MAX_ENCODED_CLOUD_BYTES = 850_000;
+export const MAX_ENCODED_CLOUD_BYTES = 850_000;
+
+const COMPLETED_COUNT_RADIX = 36;
+const COMPLETED_COUNT_WIDTH = 2;
+const ENCODED_COMPLETED_COUNTS_LENGTH = LIST_IDS.length * COMPLETED_COUNT_WIDTH;
 
 export interface CloudCurrentDocument {
   readonly schemaVersion: typeof CLOUD_SCHEMA_VERSION;
   readonly revision: number;
   readonly cursorIndexes: readonly number[];
   readonly activeReadingDate: string;
-  readonly activeCompletedMask: number;
+  readonly activeCompletedCounts: readonly number[];
   readonly rolloverHour: number;
   readonly preferredBibleUrl: string | null;
   readonly history: readonly string[];
@@ -51,15 +57,26 @@ function isDateKey(value: unknown): value is string {
 
 function completedMask(session: ReadingSession): number {
   return LIST_IDS.reduce(
-    (mask, listId, index) => mask | (session.completed[listId] ? 1 << index : 0),
+    (mask, listId, index) =>
+      mask | (session.completedCounts[listId] > 0 ? 1 << index : 0),
     0,
   );
 }
 
-function completionRecord(mask: number): ListRecord<boolean> {
+function completedCountsFromMask(mask: number): ListRecord<number> {
   return Object.fromEntries(
-    LIST_IDS.map((listId, index) => [listId, Boolean(mask & (1 << index))]),
-  ) as ListRecord<boolean>;
+    LIST_IDS.map((listId, index) => [listId, mask & (1 << index) ? 1 : 0]),
+  ) as ListRecord<number>;
+}
+
+function completedCountsRecord(counts: readonly number[]): ListRecord<number> {
+  return Object.fromEntries(
+    LIST_IDS.map((listId, index) => [listId, counts[index]!]),
+  ) as ListRecord<number>;
+}
+
+function sessionCompletedCounts(session: ReadingSession): number[] {
+  return LIST_IDS.map((listId) => session.completedCounts[listId]);
 }
 
 function sessionCursorIndexes(session: ReadingSession): number[] {
@@ -93,6 +110,53 @@ function validateMask(value: unknown): number {
   return Number(value);
 }
 
+function validateCompletedCount(value: unknown, description: string): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    Number(value) < 0 ||
+    Number(value) > MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION
+  ) {
+    throw new Error(`Cloud data has an invalid completed count for ${description}`);
+  }
+  return Number(value);
+}
+
+function validateCompletedCounts(value: unknown): number[] {
+  if (!Array.isArray(value) || value.length !== LIST_IDS.length) {
+    throw new Error("Cloud data has an invalid completed-count list");
+  }
+  return value.map((count, index) =>
+    validateCompletedCount(count, `list ${index + 1}`),
+  );
+}
+
+function encodeCompletedCounts(session: ReadingSession): string {
+  return LIST_IDS.map((listId) => {
+    const count = validateCompletedCount(
+      session.completedCounts[listId],
+      listId,
+    );
+    return count.toString(COMPLETED_COUNT_RADIX).padStart(COMPLETED_COUNT_WIDTH, "0");
+  }).join("");
+}
+
+function decodeCompletedCounts(value: unknown): number[] {
+  if (
+    typeof value !== "string" ||
+    value.length !== ENCODED_COMPLETED_COUNTS_LENGTH ||
+    !/^[0-9a-z]+$/.test(value)
+  ) {
+    throw new Error("Cloud history contains invalid completed counts");
+  }
+  return Array.from({ length: LIST_IDS.length }, (_, index) => {
+    const start = index * COMPLETED_COUNT_WIDTH;
+    return validateCompletedCount(
+      Number.parseInt(value.slice(start, start + COMPLETED_COUNT_WIDTH), COMPLETED_COUNT_RADIX),
+      `list ${index + 1}`,
+    );
+  });
+}
+
 function validateRevision(value: unknown, legacy: boolean): number {
   if (legacy && value === undefined) return 0;
   if (!Number.isSafeInteger(value) || Number(value) < 0) {
@@ -101,7 +165,7 @@ function validateRevision(value: unknown, legacy: boolean): number {
   return Number(value);
 }
 
-function sessionFromParts(
+function legacySessionFromParts(
   readingDate: unknown,
   cursorIndexes: unknown,
   maskValue: unknown,
@@ -116,7 +180,28 @@ function sessionFromParts(
     chapters: Object.fromEntries(
       LIST_IDS.map((listId, index) => [listId, chapterAt(listId, indexes[index]!).id]),
     ) as ListRecord<ReturnType<typeof chapterAt>["id"]>,
-    completed: completionRecord(mask),
+    completedCounts: completedCountsFromMask(mask),
+  };
+}
+
+function currentSessionFromParts(
+  readingDate: unknown,
+  cursorIndexes: unknown,
+  completedCountsValue: unknown,
+): ReadingSession {
+  if (!isDateKey(readingDate)) {
+    throw new Error("Cloud history contains an invalid reading date");
+  }
+  const indexes = validateCursorIndexes(cursorIndexes);
+  const counts = Array.isArray(completedCountsValue)
+    ? validateCompletedCounts(completedCountsValue)
+    : decodeCompletedCounts(completedCountsValue);
+  return {
+    readingDate,
+    chapters: Object.fromEntries(
+      LIST_IDS.map((listId, index) => [listId, chapterAt(listId, indexes[index]!).id]),
+    ) as ListRecord<ReturnType<typeof chapterAt>["id"]>,
+    completedCounts: completedCountsRecord(counts),
   };
 }
 
@@ -127,7 +212,7 @@ function legacySessionFromCloud(value: unknown): ReadingSession {
   ) {
     throw new Error("Cloud history contains an unsupported session");
   }
-  return sessionFromParts(
+  return legacySessionFromParts(
     value.readingDate,
     value.cursorIndexes,
     value.completedMask,
@@ -135,10 +220,10 @@ function legacySessionFromCloud(value: unknown): ReadingSession {
 }
 
 function encodeCompactSession(session: ReadingSession): string {
-  return `${session.readingDate}|${sessionCursorIndexes(session).join(",")}|${completedMask(session)}`;
+  return `${session.readingDate}|${sessionCursorIndexes(session).join(",")}|${encodeCompletedCounts(session)}`;
 }
 
-function decodeCompactSession(value: unknown): ReadingSession {
+function decodeLegacyCompactSession(value: unknown): ReadingSession {
   if (typeof value !== "string") {
     throw new Error("Cloud history contains an invalid compact session");
   }
@@ -150,10 +235,28 @@ function decodeCompactSession(value: unknown): ReadingSession {
   ) {
     throw new Error("Cloud history contains an invalid compact session");
   }
-  return sessionFromParts(
+  return legacySessionFromParts(
     parts[0],
     parts[1]!.split(",").map(Number),
     Number(parts[2]),
+  );
+}
+
+function decodeCompactSession(value: unknown): ReadingSession {
+  if (typeof value !== "string") {
+    throw new Error("Cloud history contains an invalid compact session");
+  }
+  const parts = value.split("|");
+  if (
+    parts.length !== 3 ||
+    !/^\d+(,\d+){9}$/.test(parts[1] ?? "")
+  ) {
+    throw new Error("Cloud history contains an invalid compact session");
+  }
+  return currentSessionFromParts(
+    parts[0],
+    parts[1]!.split(",").map(Number),
+    parts[2],
   );
 }
 
@@ -166,7 +269,9 @@ export function encodeCloudCurrent(state: ReadingState): CloudCurrentDocument {
     revision: state.revision,
     cursorIndexes: LIST_IDS.map((listId) => state.cursors[listId]),
     activeReadingDate: state.activeSession.readingDate,
-    activeCompletedMask: completedMask(state.activeSession),
+    activeCompletedCounts: validateCompletedCounts(
+      sessionCompletedCounts(state.activeSession),
+    ),
     rolloverHour: state.settings.rolloverHour,
     preferredBibleUrl: state.settings.preferredBibleUrl ?? null,
     history: state.history.map(encodeCompactSession),
@@ -194,14 +299,21 @@ export function decodeCloudState(
     throw new Error("Cloud state uses an unsupported schema");
   }
   const legacy = currentValue.schemaVersion === LEGACY_CLOUD_SCHEMA_VERSION;
-  if (!legacy && currentValue.schemaVersion !== CLOUD_SCHEMA_VERSION) {
+  const previous = currentValue.schemaVersion === PREVIOUS_CLOUD_SCHEMA_VERSION;
+  const current = currentValue.schemaVersion === CLOUD_SCHEMA_VERSION;
+  if (!legacy && !previous && !current) {
     throw new Error("Cloud state uses an unsupported schema");
   }
   if (!isDateKey(currentValue.activeReadingDate)) {
     throw new Error("Cloud state has an invalid active reading date");
   }
   const indexes = validateCursorIndexes(currentValue.cursorIndexes);
-  const mask = validateMask(currentValue.activeCompletedMask);
+  const legacyCompletedCounts = current
+    ? undefined
+    : completedCountsFromMask(validateMask(currentValue.activeCompletedMask));
+  const activeCompletedCounts = current
+    ? validateCompletedCounts(currentValue.activeCompletedCounts)
+    : LIST_IDS.map((listId) => legacyCompletedCounts![listId]);
   const revision = validateRevision(currentValue.revision, legacy);
   const rolloverHour = currentValue.rolloverHour;
   if (!Number.isInteger(rolloverHour) || Number(rolloverHour) < 0 || Number(rolloverHour) > 23) {
@@ -225,7 +337,9 @@ export function decodeCloudState(
     if (currentValue.history.length > MAX_CLOUD_HISTORY_SESSIONS) {
       throw new Error("Cloud history is too large");
     }
-    history = currentValue.history.map(decodeCompactSession);
+    history = currentValue.history.map(
+      current ? decodeCompactSession : decodeLegacyCompactSession,
+    );
   }
 
   const cursors = Object.fromEntries(
@@ -244,7 +358,7 @@ export function decodeCloudState(
       chapters: Object.fromEntries(
         LIST_IDS.map((listId, index) => [listId, chapterAt(listId, indexes[index]!).id]),
       ) as ListRecord<ReturnType<typeof chapterAt>["id"]>,
-      completed: completionRecord(mask),
+      completedCounts: completedCountsRecord(activeCompletedCounts),
     },
     history,
     settings,
@@ -252,5 +366,12 @@ export function decodeCloudState(
 }
 
 export function cloudStateNeedsMigration(value: unknown): boolean {
+  return isRecord(value) && (
+    value.schemaVersion === LEGACY_CLOUD_SCHEMA_VERSION ||
+    value.schemaVersion === PREVIOUS_CLOUD_SCHEMA_VERSION
+  );
+}
+
+export function cloudStateUsesLegacySessions(value: unknown): boolean {
   return isRecord(value) && value.schemaVersion === LEGACY_CLOUD_SCHEMA_VERSION;
 }

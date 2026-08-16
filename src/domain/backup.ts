@@ -8,6 +8,7 @@ import {
 } from "./lists.js";
 import {
   CURRENT_SCHEMA_VERSION,
+  MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION,
   MAX_READING_HISTORY_SESSIONS,
   readingDateFor,
   type ListRecord,
@@ -18,6 +19,7 @@ import {
 
 export const MAX_BACKUP_HISTORY_SESSIONS = MAX_READING_HISTORY_SESSIONS;
 
+const LEGACY_SCHEMA_VERSION = 1;
 const MAX_PREFERRED_BIBLE_URL_LENGTH = 2_048;
 const LIST_ID_SET = new Set<string>(LIST_IDS);
 
@@ -61,33 +63,55 @@ function hasExactListKeys(value: Record<string, unknown>): boolean {
   );
 }
 
-function normalizeSession(value: unknown, description: string): ReadingSession {
+function normalizeSession(
+  value: unknown,
+  description: string,
+  schemaVersion: typeof LEGACY_SCHEMA_VERSION | typeof CURRENT_SCHEMA_VERSION,
+): ReadingSession {
   if (!isRecord(value) || !isRealDateKey(value.readingDate)) {
     throw new Error(`${description} has an invalid reading date`);
   }
+  const completionValue =
+    schemaVersion === LEGACY_SCHEMA_VERSION
+      ? value.completed
+      : value.completedCounts;
   if (
     !isRecord(value.chapters) ||
-    !isRecord(value.completed) ||
+    !isRecord(completionValue) ||
     !hasExactListKeys(value.chapters) ||
-    !hasExactListKeys(value.completed)
+    !hasExactListKeys(completionValue)
   ) {
     throw new Error(`${description} is missing exact chapter or completion data`);
   }
 
   const chapters = {} as ListRecord<ChapterId>;
-  const completed = {} as ListRecord<boolean>;
+  const completedCounts = {} as ListRecord<number>;
   for (const listId of LIST_IDS) {
     const chapterId = value.chapters[listId];
-    const isCompleted = value.completed[listId];
-    if (typeof chapterId !== "string" || typeof isCompleted !== "boolean") {
+    const completion = completionValue[listId];
+    if (typeof chapterId !== "string") {
       throw new Error(`${description} has invalid data for ${listId}`);
     }
     cursorForChapter(listId, chapterId as ChapterId);
     chapters[listId] = chapterId as ChapterId;
-    completed[listId] = isCompleted;
+    if (schemaVersion === LEGACY_SCHEMA_VERSION) {
+      if (typeof completion !== "boolean") {
+        throw new Error(`${description} has invalid data for ${listId}`);
+      }
+      completedCounts[listId] = completion ? 1 : 0;
+    } else {
+      if (
+        !Number.isSafeInteger(completion) ||
+        Number(completion) < 0 ||
+        Number(completion) > MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION
+      ) {
+        throw new Error(`${description} has an invalid completed count for ${listId}`);
+      }
+      completedCounts[listId] = Number(completion);
+    }
   }
 
-  return { readingDate: value.readingDate, chapters, completed };
+  return { readingDate: value.readingDate, chapters, completedCounts };
 }
 
 function normalizeCursors(value: unknown): ListRecord<number> {
@@ -153,9 +177,9 @@ function normalizeRevision(value: unknown): number {
 
 function nextChapterId(session: ReadingSession, listId: ListId): ChapterId {
   const cursor = cursorForChapter(listId, session.chapters[listId]);
-  if (!session.completed[listId]) return chapterAt(listId, cursor).id;
   const listLength = READING_LIST_BY_ID[listId].chapters.length;
-  return chapterAt(listId, (cursor + 1) % listLength).id;
+  const completed = session.completedCounts[listId];
+  return chapterAt(listId, (cursor + (completed % listLength)) % listLength).id;
 }
 
 function validateTimeline(
@@ -179,14 +203,23 @@ function validateTimeline(
 }
 
 export function normalizeReadingState(value: unknown): ReadingState {
-  if (!isRecord(value) || value.version !== CURRENT_SCHEMA_VERSION) {
+  if (
+    !isRecord(value) ||
+    (value.version !== LEGACY_SCHEMA_VERSION &&
+      value.version !== CURRENT_SCHEMA_VERSION)
+  ) {
     throw new Error("This backup uses an unsupported schema version");
   }
+  const schemaVersion = value.version;
 
   const revision = normalizeRevision(value.revision);
   const settings = normalizeSettings(value.settings);
   const cursors = normalizeCursors(value.cursors);
-  const activeSession = normalizeSession(value.activeSession, "The active session");
+  const activeSession = normalizeSession(
+    value.activeSession,
+    "The active session",
+    schemaVersion,
+  );
   if (!Array.isArray(value.history)) throw new Error("Backup history is invalid");
   if (value.history.length > MAX_BACKUP_HISTORY_SESSIONS) {
     throw new Error(
@@ -194,7 +227,7 @@ export function normalizeReadingState(value: unknown): ReadingState {
     );
   }
   const history = value.history.map((session, index) =>
-    normalizeSession(session, `History session ${index + 1}`),
+    normalizeSession(session, `History session ${index + 1}`, schemaVersion),
   );
 
   for (const listId of LIST_IDS) {

@@ -23,6 +23,7 @@ import {
 import type { ReadingState } from "../domain/state.js";
 import {
   cloudStateNeedsMigration,
+  cloudStateUsesLegacySessions,
   decodeCloudState,
   encodeCloudCurrent,
 } from "./cloud-codec.js";
@@ -79,14 +80,16 @@ export async function loadCloudState(userId: string): Promise<LoadedCloudState |
   if (!currentSnapshot.exists()) return undefined;
   const currentValue = currentSnapshot.data();
   let needsMigration: boolean;
+  let usesLegacySessions: boolean;
   try {
     needsMigration = cloudStateNeedsMigration(currentValue);
+    usesLegacySessions = cloudStateUsesLegacySessions(currentValue);
   } catch (error) {
     throw new CloudDataError("Cloud progress uses an unsupported or invalid format.", {
       cause: error,
     });
   }
-  const legacySessions = needsMigration
+  const legacySessions = usesLegacySessions
     ? (await getDocsFromServer(legacySessionCollection(userId))).docs.map((snapshot) => snapshot.data())
     : [];
   try {

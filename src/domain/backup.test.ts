@@ -8,8 +8,10 @@ import {
   serializeBackup,
 } from "./backup.js";
 import {
+  completeNextAdditionalChapter,
   createInitialState,
   createSession,
+  MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION,
   rolloverIfNeeded,
   setCompletion,
   setReadingSettings,
@@ -18,6 +20,12 @@ import {
 } from "./state.js";
 
 interface MutableSession {
+  readingDate: string;
+  chapters: ListRecord<ChapterId>;
+  completedCounts: ListRecord<number>;
+}
+
+interface LegacyMutableSession {
   readingDate: string;
   chapters: ListRecord<ChapterId>;
   completed: ListRecord<boolean>;
@@ -35,6 +43,15 @@ interface MutableBackup {
   };
 }
 
+interface LegacyMutableBackup {
+  version: 1;
+  revision?: unknown;
+  cursors: ListRecord<number>;
+  activeSession: LegacyMutableSession;
+  history: LegacyMutableSession[];
+  settings: MutableBackup["settings"];
+}
+
 const AUGUST_3 = new Date("2026-08-03T12:00:00");
 const AUGUST_4 = new Date("2026-08-04T12:00:00");
 const AUGUST_5 = new Date("2026-08-05T12:00:00");
@@ -44,8 +61,29 @@ function mutableBackup(state: ReadingState): MutableBackup {
   return JSON.parse(serializeBackup(state)) as MutableBackup;
 }
 
-function parseValue(value: MutableBackup, now: Date = AUGUST_6): ReadingState {
+function parseValue(
+  value: MutableBackup | LegacyMutableBackup,
+  now: Date = AUGUST_6,
+): ReadingState {
   return parseBackupJson(JSON.stringify(value), now);
+}
+
+function legacyBackup(state: ReadingState): LegacyMutableBackup {
+  const legacySession = (session: ReadingState["activeSession"]): LegacyMutableSession => ({
+    readingDate: session.readingDate,
+    chapters: { ...session.chapters },
+    completed: Object.fromEntries(
+      Object.entries(session.completedCounts).map(([listId, count]) => [listId, count > 0]),
+    ) as ListRecord<boolean>,
+  });
+  return {
+    version: 1,
+    revision: state.revision,
+    cursors: { ...state.cursors },
+    activeSession: legacySession(state.activeSession),
+    history: state.history.map(legacySession),
+    settings: { ...state.settings },
+  };
 }
 
 function stateWithTwoHistorySessions(): ReadingState {
@@ -67,6 +105,31 @@ describe("backup validation", () => {
     const legacy = mutableBackup(state);
     delete legacy.revision;
     expect(parseValue(legacy).revision).toBe(0);
+  });
+
+  it("migrates schema version 1 booleans to counts without changing revision", () => {
+    const state = stateWithTwoHistorySessions();
+    const legacy = legacyBackup(state);
+
+    const migrated = parseValue(legacy);
+    expect(migrated).toEqual(state);
+    expect(migrated.version).toBe(2);
+    expect(migrated.revision).toBe(state.revision);
+    expect(migrated.history[0]?.completedCounts.gospels).toBe(1);
+    expect(migrated.history[0]?.completedCounts.acts).toBe(0);
+
+    delete legacy.revision;
+    expect(parseValue(legacy).revision).toBe(0);
+  });
+
+  it("strictly validates legacy boolean completions while migrating", () => {
+    const legacy = legacyBackup(createInitialState(AUGUST_3));
+    (legacy.activeSession.completed as unknown as Record<string, unknown>).gospels = 1;
+    expect(() => parseValue(legacy)).toThrow(/invalid data for gospels/);
+
+    const unsupported = mutableBackup(createInitialState(AUGUST_3));
+    unsupported.version = 3;
+    expect(() => parseValue(unsupported)).toThrow(/unsupported schema version/);
   });
 
   it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "4", null])(
@@ -111,7 +174,7 @@ describe("backup validation", () => {
     expect(() => parseValue(missingCursor)).toThrow(/exactly the ten/);
 
     const extraCompletion = mutableBackup(createInitialState(AUGUST_3));
-    (extraCompletion.activeSession.completed as unknown as Record<string, unknown>).extra = false;
+    (extraCompletion.activeSession.completedCounts as unknown as Record<string, unknown>).extra = 0;
     expect(() => parseValue(extraCompletion)).toThrow(/exact chapter or completion/);
 
     const invalidCursor = mutableBackup(createInitialState(AUGUST_3));
@@ -127,9 +190,19 @@ describe("backup validation", () => {
     expect(() => parseValue(cursorMismatch)).toThrow(/does not match the gospels cursor/);
 
     const invalidCompletion = mutableBackup(createInitialState(AUGUST_3));
-    (invalidCompletion.activeSession.completed as unknown as Record<string, unknown>).gospels = 1;
-    expect(() => parseValue(invalidCompletion)).toThrow(/invalid data for gospels/);
+    (invalidCompletion.activeSession.completedCounts as unknown as Record<string, unknown>)
+      .gospels = 1.5;
+    expect(() => parseValue(invalidCompletion)).toThrow(/invalid completed count for gospels/);
   });
+
+  it.each([-1, 1.5, MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION + 1])(
+    "rejects invalid completed count %j",
+    (completedCount) => {
+      const backup = mutableBackup(createInitialState(AUGUST_3));
+      backup.activeSession.completedCounts.gospels = completedCount;
+      expect(() => parseValue(backup)).toThrow(/invalid completed count for gospels/);
+    },
+  );
 
   it("requires unique, strictly increasing history before the active session", () => {
     const duplicate = mutableBackup(stateWithTwoHistorySessions());
@@ -147,8 +220,39 @@ describe("backup validation", () => {
 
   it("rejects a history completion that cannot lead to the next session", () => {
     const backup = mutableBackup(stateWithTwoHistorySessions());
-    backup.history[0]!.completed.gospels = false;
+    backup.history[0]!.completedCounts.gospels = 0;
     expect(() => parseValue(backup)).toThrow(/invalid gospels transition/);
+  });
+
+  it("round-trips additional reading and validates its full transition count", () => {
+    let state = createInitialState(AUGUST_3);
+    state = setCompletion(state, "gospels", true);
+    state = completeNextAdditionalChapter(state, "gospels");
+    state = completeNextAdditionalChapter(state, "gospels");
+    state = rolloverIfNeeded(state, AUGUST_4);
+    expect(parseBackupJson(serializeBackup(state), AUGUST_5)).toEqual(state);
+
+    const invalid = mutableBackup(state);
+    invalid.history[0]!.completedCounts.gospels = 2;
+    expect(() => parseValue(invalid)).toThrow(/invalid gospels transition/);
+  });
+
+  it("accepts a full-list same-day cycle whose next chapter is unchanged", () => {
+    const initial = createInitialState(AUGUST_3);
+    let state: ReadingState = {
+      ...initial,
+      activeSession: {
+        ...initial.activeSession,
+        completedCounts: {
+          ...initial.activeSession.completedCounts,
+          acts: 28,
+        },
+      },
+    };
+    state = rolloverIfNeeded(state, AUGUST_4);
+    expect(state.activeSession.chapters.acts).toBe("acts:1");
+    expect(state.history[0]?.completedCounts.acts).toBe(28);
+    expect(parseBackupJson(serializeBackup(state), AUGUST_5)).toEqual(state);
   });
 
   it("accepts a looping history transition", () => {

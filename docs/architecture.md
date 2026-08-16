@@ -16,9 +16,9 @@ The layers are deliberately narrow:
 | Concern | Location | Responsibility |
 | --- | --- | --- |
 | Chapter topology | `src/domain/lists.ts` | Ten ordered, independently looping sequences and Day 1 defaults |
-| State machine | `src/domain/state.ts` | Reading-date calculation, fixed sessions, cursor advancement, correction, and reset |
+| State machine | `src/domain/state.ts` | Reading-date calculation, fixed core sessions, contiguous continuation counts, cursor advancement, correction, and reset |
 | Local persistence | `src/data/database.ts` | Guest- and UID-scoped Dexie/IndexedDB state used immediately and offline |
-| Cloud codec | `src/data/cloud-codec.ts` | Validated compact encoding for the atomic Firestore backup and version 1 migration |
+| Cloud codec | `src/data/cloud-codec.ts` | Validated compact encoding for the atomic Firestore backup and cloud-schema migration |
 | Cloud sync | `src/data/cloud.ts` | Google sign-in, server reconciliation, and a memory-only Firestore cache |
 | Reader links | `src/domain/bible-links.ts` | Validated YouVersion/ESV chapter URLs and phone/tablet detection |
 | UI | `src/App.tsx` | Phone-first list, focus mode, history, settings, and recovery actions |
@@ -50,9 +50,10 @@ without making Day 24 the default for any new profile.
 For the selected state:
 
 1. Calculate the reading-date key using the configured local rollover hour.
-2. If the key has not changed, keep the active session exactly as shown.
-3. If it changed, archive the prior session, advance each checked cursor once,
-   retain each unchecked cursor, and create one new session for the current key.
+2. If the key has not changed, keep the active core session exactly as shown.
+3. If it changed, archive the prior session, advance each cursor by that list's
+   contiguous completed count, retain each zero-count cursor, and create one new
+   zero-count session for the current key.
 4. Persist in the active IndexedDB profile, render, and attempt an authenticated
    cloud write when the selected state changed. If offline, later
    reconciliation uploads the durable local revision.
@@ -73,6 +74,15 @@ IndexedDB write succeeds. Import, reset, and ordinary mutations replace only
 the active profile. Firestore protects account state from clearing all browser
 data or replacing the device.
 
+The physical IndexedDB schema advances to version 2 without changing the store
+shape. That upgrade prevents an already-installed domain-v1 client from
+reopening the database after the current client establishes domain-v2 state.
+Legacy v3-prefix journals remain recoverable only while the durable record is
+absent or still domain v1; once IndexedDB contains current-domain data, those
+legacy journal values are ignored and compare-and-swap cleared regardless of
+revision. This one-way barrier prevents a stale tab from erasing additional
+chapter counts during the rollout.
+
 The pre-profile `primary` IndexedDB record and version 2 journal are not treated
 as guest data. The original reader's verified account can claim an unchanged
 legacy snapshot into its UID scope. The claim is transactional for IndexedDB,
@@ -86,14 +96,22 @@ Cloud data is scoped below the authenticated user:
 /users/{uid}
 ```
 
-The version 2 user document contains a monotonic revision, current cursors,
-active-session metadata, settings, and up to 10,000 compact history entries.
+The version 3 user document contains a monotonic revision, current cursors,
+active-session completion counts, settings, and up to 10,000 compact history
+entries. Domain/backup schema 2 represents each list with one bounded count
+that includes its fixed core chapter; cloud history encodes those counts in a
+constant-width compact form. Domain schema 1 and cloud schemas 1 and 2 remain
+readable for automatic migration, with their booleans or masks mapped to counts
+of zero or one.
 Keeping the complete recovery state in one document makes every cloud update
 atomic; there is no delete-then-rebuild window. Version 1 session subdocuments
 remain read-only during automatic migration. Firestore rules require a verified
 Google sign-in whose authenticated UID matches the path, validate the document
-shape, reject deletes, and reject non-increasing version 2 writes. One reader
-cannot list, read, update, or delete another reader's document.
+shape, reject deletes, and reject stale current-schema writes. Transitional
+rules permit schema 2 clients until migration but forbid a version 3 document
+from being downgraded, so an older installed client cannot erase additional
+reading. One reader cannot list, read, update, or delete another reader's
+document.
 
 Firestore is initialized with a memory-only cache. The UID-scoped application
 IndexedDB store remains the durable offline copy, while Firebase document data
@@ -133,6 +151,15 @@ Synchronization follows these rules:
   safety copy.
 - JSON export remains useful even with cloud sync and should stay backward
   compatible through explicit schema versioning.
+
+Continuation previews are derived from static list topology and UI batch state;
+opening, closing, or revealing a group does not create a revision or write.
+Only appending the next contiguous chapter or undoing the current tail changes
+state. Counts are capped at 1,023 completed chapters per list in one reading
+session. This is well beyond the intended reading use case while bounding
+untrusted imports, rendering, and security-rule validation. The compact count
+keeps cloud document growth independent of how many additional chapters were
+read that day, although each completion remains an ordinary saved mutation.
 
 Each account is optimized for one reader primarily using one phone. The same
 deployment can serve many independent accounts, but profiles never collaborate
@@ -202,6 +229,25 @@ Remain on the Spark plan. Features that can introduce billing or complicate the
 otherwise static architecture require explicit approval. In particular, do not
 add Cloud Functions for rollover: elapsed time does not advance this plan, and
 the client can calculate the next session when it opens.
+
+## Verification environments
+
+The pre-production environment is the locally served production bundle, driven
+by Playwright in a real browser. Guest-mode tests exercise the actual IndexedDB
+record and localStorage write-ahead journal across reloads; they do not replace
+durability with an in-memory fake. The Firestore emulator separately compiles
+and exercises Security Rules, and GitHub Actions repeats type checking, unit
+tests, emulator tests, the production build, browser flows, accessibility, PWA,
+and phone-overflow checks before Pages can deploy.
+
+A second Firebase or Pages QA deployment is intentionally deferred. It would
+add credentials, environment drift, migration sequencing, and maintenance
+without materially improving the current local-first/static-app test surface.
+After CI passes, use production only for a short signed-in smoke test covering
+the real Google Auth and Firestore boundary. Reconsider a dedicated QA project
+if the app adds server code, collaborative writes, billing-enabled services, or
+frequent cloud-schema changes that cannot be represented safely in the
+emulator.
 
 ## Operations
 

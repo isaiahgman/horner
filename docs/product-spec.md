@@ -10,11 +10,14 @@ or create catch-up work because time passed.
 ## Core model
 
 - The source of truth is ten independent cursor positions, not a dated plan.
-- An active reading session contains exactly one chapter from each list.
-- Marking a chapter complete records intent but does not change the visible
-  session.
-- At the next reading-day boundary, completed lists advance one chapter and
-  incomplete lists stay put.
+- An active reading session contains exactly one fixed core chapter from each
+  list. Those ten chapters are the daily milestone.
+- After completing a core chapter, the reader may continue through additional
+  consecutive chapters from that same list during the same reading day.
+- Marking a core or additional chapter complete records intent but does not
+  replace the row under the reader's finger.
+- At the next reading-day boundary, each list advances by exactly the number
+  of consecutive chapters recorded for it. An unread list stays put.
 - Each list loops independently after its final chapter.
 - Opening the app after several days creates one new session, not empty sessions
   for the skipped dates.
@@ -29,16 +32,27 @@ or create catch-up work because time passed.
 
 ## Primary experience
 
-The default screen shows "Today," a completed count, and ten large rows in list
-order. Each row has a checkbox and linked chapter reference. On a phone or
+The default screen shows "Today," a completed count, and ten large core rows in
+list order. Each row has a checkbox and linked chapter reference. On a phone or
 tablet, the link uses YouVersion's ESV HTTPS passage URL so the operating system
 can open the installed Bible app, with Bible.com as the automatic fallback. On
 a desktop or laptop, it opens the chapter on ESV.org in a new tab. Checking a
-row leaves all ten references in place for the entire session. A secondary
-focus mode may present the same fixed session one chapter at a time.
+core row leaves all ten references in place for the entire session. The count
+and progress bar remain out of ten; any additional chapters are reported in a
+separate, quieter total.
+
+A completed core row offers a per-list continuation control. Opening it reveals
+the next three consecutive references without changing progress. Additional
+completion is a gap-free prefix: only the next unread chapter can be added and
+only the most recently added chapter can be undone. Further groups of three are
+revealed explicitly, so a completed group never changes under a second tap.
+Another list may be continued before the other core rows are complete. A
+secondary focus mode may present the same fixed core session one chapter at a
+time; adding such a mode must keep continuation separate from the core flow.
 
 History is secondary. It lists only sessions the reader actually had, shows the
-completed count, and can reveal the ten results. The home screen must not show
+core completed count plus a separate additional count, and can reveal the ten
+core results and exact additional references. The home screen must not show
 backlogs, streak pressure, missed-day warnings, charts, or productivity scores.
 
 Signed-out reading belongs to a guest profile. Each verified Google account has
@@ -49,7 +63,8 @@ existing account or cloud state.
 
 ## MVP scope
 
-1. Ten-chapter session and independent completion controls.
+1. Fixed ten-chapter core session, independent completion controls, and
+   optional per-list same-day continuation.
 2. Automatic, self-healing reading-day rollover.
 3. Offline, installable PWA behavior.
 4. Local IndexedDB persistence with schema versioning.
@@ -72,10 +87,13 @@ Bible-text API is necessary because the app stores references only.
 
 State consists of a schema version, ten cursor indexes, one active session,
 completed session history, and settings. A session stores its reading-date key,
-the exact ten chapter IDs shown, and ten completion flags. IndexedDB and its
-write-ahead journal partition this state into one guest scope and one scope per
-Firebase UID. Backup import must validate the schema and referential integrity
-before replacing only the active profile.
+the exact ten core chapter IDs shown, and ten bounded contiguous completion
+counts. A count of zero means that list's core chapter is unread, one means only
+the core chapter is complete, and a larger count includes consecutive
+additional chapters. IndexedDB and its write-ahead journal partition this state
+into one guest scope and one scope per Firebase UID. Backup import must validate
+the schema, count bounds, and timeline integrity before replacing only the
+active profile.
 
 Cloud state is encoded into one compact, atomically replaced document containing
 the current state and bounded history. Each record is scoped to the
@@ -95,13 +113,21 @@ durable offline store.
   instead of resetting it.
 - Existing persisted progress is preserved through the profile migration and
   is not replaced by a new Day 1 state.
-- Checking Matthew 24 does not replace it with Matthew 25 in the active session.
-- On rollover, a checked Matthew 24 becomes Matthew 25; an unchecked Job 24
-  remains Job 24. These chapters illustrate cursor behavior and are not the
-  new-profile default.
+- Checking Matthew 24 does not replace it with Matthew 25 in the active core
+  session.
+- Completing Matthew 24 plus two additional Gospel chapters keeps all three
+  visible for that session and starts the next reading day at Matthew 27. An
+  unchecked Job 24 remains Job 24. These chapters illustrate cursor behavior
+  and are not the new-profile default.
+- The daily milestone remains 10/10 regardless of additional reading, while a
+  separate total records every additional chapter.
+- Revealing a continuation group, refreshing before completing it, or tapping
+  an already-handled stale control never records another chapter.
 - Returning Monday after a Friday session makes exactly one Monday session and
   adds no Saturday or Sunday history.
 - Acts 28 advances to Acts 1; every other list loops in the same way.
+- Same-day continuation can cross a list boundary and can retain a completed
+  full loop because the session stores a count rather than only its end cursor.
 - At the default boundary, 3:59 a.m. belongs to the previous civil date and
   4:00 a.m. belongs to the new civil date.
 - Repeated rollover checks within a reading day are idempotent.
@@ -127,6 +153,9 @@ durable offline store.
 - Rapid taps persist in invocation order in the active IndexedDB profile. When
   online they are submitted immediately; when offline, later reconciliation
   uploads the newer durable local revision.
+- A reading mutation at or after a newly reached reading-day boundary first
+  rolls the session forward and does not apply a stale control from the prior
+  screen to a different chapter.
 - Guest progress is not silently merged into an existing account; both local
   profiles remain intact. Equal-revision divergence within one account still
   requires an explicit device-or-cloud choice.

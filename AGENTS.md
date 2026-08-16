@@ -22,9 +22,14 @@ in either location.
 
 - There are ten independent, looping chapter cursors.
 - Only completed reading advances a cursor; elapsed dates never do.
-- An active session always contains exactly one chapter from every list.
-- Checking a chapter must not replace it during the current reading session.
-- On rollover, checked lists advance once and unchecked lists stay put.
+- An active session always contains exactly one fixed core chapter from every
+  list. A completed core chapter may have a contiguous same-day continuation.
+- Checking a core or additional chapter must not replace it under the reader's
+  finger during the current reading session.
+- The core completion milestone is always out of ten. Additional chapters are
+  reported separately and never inflate that denominator.
+- On rollover, each list advances by exactly the contiguous number of chapters
+  recorded for it; an unread list stays put.
 - Skipped days produce no sessions, backlog, catch-up count, or missed-day
   warning.
 - Reading dates use the configurable local-time boundary, defaulting to 4 a.m.

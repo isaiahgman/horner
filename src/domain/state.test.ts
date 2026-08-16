@@ -9,18 +9,27 @@ import {
   type ListId,
 } from "./lists.js";
 import {
+  additionalCompletedCount,
+  chapterAtOffset,
+  completeNextAdditionalChapter,
   completedCount,
+  coreCompleted,
   createInitialState,
   createSession,
+  MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION,
   MAX_READING_HISTORY_SESSIONS,
+  nextAdditionalChapters,
   readingDateFor,
   rebaseReadingState,
   resetReadingState,
   rolloverIfNeeded,
   setCompletion,
+  setPreviousSessionCompletedCount,
   setPreviousSessionCompletion,
   setReadingSettings,
+  totalCompletedCount,
   toggleCompletion,
+  undoLastAdditionalChapter,
   undoLastRollover,
   type ListRecord,
   type ReadingState,
@@ -63,6 +72,7 @@ describe("reading-day calculation", () => {
 describe("reading state machine", () => {
   it("creates one fixed chapter from each list", () => {
     const state = createInitialState(localDate("2026-08-03T12:00:00"));
+    expect(state.version).toBe(2);
     expect(state.revision).toBe(0);
     expect(Object.values(state.activeSession.chapters)).toHaveLength(10);
     expect(Object.values(state.activeSession.chapters)).toEqual([
@@ -84,10 +94,87 @@ describe("reading state machine", () => {
     const state = createInitialState(localDate("2026-08-03T12:00:00"));
     const checked = toggleCompletion(state, "gospels");
     expect(checked.activeSession.chapters.gospels).toBe("matthew:1");
-    expect(checked.activeSession.completed.gospels).toBe(true);
+    expect(checked.activeSession.completedCounts.gospels).toBe(1);
+    expect(coreCompleted(checked.activeSession, "gospels")).toBe(true);
     expect(checked.revision).toBe(1);
-    expect(state.activeSession.completed.gospels).toBe(false);
+    expect(state.activeSession.completedCounts.gospels).toBe(0);
     expect(setCompletion(checked, "gospels", true)).toBe(checked);
+  });
+
+  it("tracks contiguous additional chapters without changing the core ten count", () => {
+    let state = createInitialState(localDate("2026-08-03T12:00:00"));
+    expect(nextAdditionalChapters(state.activeSession, "gospels")).toEqual([]);
+
+    for (const listId of LIST_IDS) state = setCompletion(state, listId, true);
+    for (let index = 0; index < 20; index += 1) {
+      state = completeNextAdditionalChapter(state, "gospels");
+    }
+    state = completeNextAdditionalChapter(state, "acts");
+
+    expect(completedCount(state.activeSession)).toBe(10);
+    expect(totalCompletedCount(state.activeSession)).toBe(31);
+    expect(additionalCompletedCount(state.activeSession)).toBe(21);
+    expect(additionalCompletedCount(state.activeSession, "gospels")).toBe(20);
+    expect(state.activeSession.completedCounts.gospels).toBe(21);
+    expect(state.activeSession.chapters.gospels).toBe("matthew:1");
+    expect(nextAdditionalChapters(state.activeSession, "gospels").map(({ label }) => label))
+      .toEqual(["Matthew 22", "Matthew 23", "Matthew 24"]);
+  });
+
+  it("derives offset chapters across book and list boundaries", () => {
+    const state = createInitialState(localDate("2026-08-03T12:00:00"));
+    expect(chapterAtOffset(state.activeSession, "gospels", 0).label).toBe("Matthew 1");
+    expect(chapterAtOffset(state.activeSession, "gospels", 28).label).toBe("Mark 1");
+    expect(chapterAtOffset(state.activeSession, "acts", 28).label).toBe("Acts 1");
+    expect(() => chapterAtOffset(state.activeSession, "acts", -1)).toThrow(RangeError);
+    expect(() => nextAdditionalChapters(state.activeSession, "acts", 1.5)).toThrow(
+      RangeError,
+    );
+  });
+
+  it("guards append, duplicate invocation, suffix undo, and core uncheck", () => {
+    const initial = createInitialState(localDate("2026-08-03T12:00:00"));
+    expect(() => completeNextAdditionalChapter(initial, "gospels")).toThrow(
+      /Complete the core chapter/,
+    );
+
+    const core = setCompletion(initial, "gospels", true);
+    const withExtra = completeNextAdditionalChapter(core, "gospels", 1);
+    expect(withExtra.activeSession.completedCounts.gospels).toBe(2);
+    expect(withExtra.revision).toBe(core.revision + 1);
+    expect(completeNextAdditionalChapter(withExtra, "gospels", 1)).toBe(withExtra);
+    expect(undoLastAdditionalChapter(withExtra, "gospels", 1)).toBe(withExtra);
+    expect(() => setCompletion(withExtra, "gospels", false)).toThrow(
+      /additional chapters/,
+    );
+
+    const undone = undoLastAdditionalChapter(withExtra, "gospels", 2);
+    expect(undone.activeSession.completedCounts.gospels).toBe(1);
+    expect(undone.revision).toBe(withExtra.revision + 1);
+    expect(undoLastAdditionalChapter(undone, "gospels")).toBe(undone);
+    expect(setCompletion(undone, "gospels", false).activeSession.completedCounts.gospels)
+      .toBe(0);
+  });
+
+  it("enforces the defensive per-list session limit", () => {
+    const initial = createInitialState(localDate("2026-08-03T12:00:00"));
+    const atLimit: ReadingState = {
+      ...initial,
+      activeSession: {
+        ...initial.activeSession,
+        completedCounts: {
+          ...initial.activeSession.completedCounts,
+          gospels: MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION,
+        },
+      },
+    };
+    expect(nextAdditionalChapters(atLimit.activeSession, "gospels")).toEqual([]);
+    expect(() => completeNextAdditionalChapter(atLimit, "gospels")).toThrow(
+      /limit has been reached/,
+    );
+    expect(() => completeNextAdditionalChapter(atLimit, "acts", -1)).toThrow(
+      RangeError,
+    );
   });
 
   it("advances only checked lists at the next reading day", () => {
@@ -133,6 +220,23 @@ describe("reading state machine", () => {
     expect(next.history).toHaveLength(1);
     expect(completedCount(next.activeSession)).toBe(0);
     expect(next.revision).toBe(state.revision + 1);
+  });
+
+  it("advances by the full contiguous count and archives the additional reading", () => {
+    let state = stateAt(localDate("2026-08-03T12:00:00"), {
+      acts: "acts:28",
+    });
+    state = setCompletion(state, "acts", true);
+    expect(nextAdditionalChapters(state.activeSession, "acts").map(({ label }) => label))
+      .toEqual(["Acts 1", "Acts 2", "Acts 3"]);
+    state = completeNextAdditionalChapter(state, "acts");
+    state = completeNextAdditionalChapter(state, "acts");
+
+    const next = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
+    expect(next.activeSession.chapters.acts).toBe("acts:3");
+    expect(next.activeSession.completedCounts.acts).toBe(0);
+    expect(next.history[0]?.completedCounts.acts).toBe(3);
+    expect(next.history[0]?.chapters.acts).toBe("acts:28");
   });
 
   it("creates no phantom sessions or extra advancement after skipped days", () => {
@@ -200,6 +304,30 @@ describe("reading state machine", () => {
     }
   });
 
+  it("supports a full same-day cycle in every list without confusing it with no progress", () => {
+    for (const listId of LIST_IDS) {
+      const listLength = READING_LIST_BY_ID[listId].chapters.length;
+      const initial = createInitialState(localDate("2026-08-03T12:00:00"));
+      const cycled: ReadingState = {
+        ...initial,
+        activeSession: {
+          ...initial.activeSession,
+          completedCounts: {
+            ...initial.activeSession.completedCounts,
+            [listId]: listLength,
+          },
+        },
+      };
+
+      const next = rolloverIfNeeded(cycled, localDate("2026-08-04T12:00:00"));
+      expect(next.activeSession.chapters[listId]).toBe(
+        initial.activeSession.chapters[listId],
+      );
+      expect(next.history[0]?.completedCounts[listId]).toBe(listLength);
+      expect(totalCompletedCount(next.activeSession)).toBe(0);
+    }
+  });
+
   it("can undo a rollover before the new session has progress", () => {
     let state = createInitialState(localDate("2026-08-03T12:00:00"));
     state = setCompletion(state, "gospels", true);
@@ -222,7 +350,7 @@ describe("reading state machine", () => {
     expect(state.activeSession.chapters.gospels).toBe("matthew:2");
 
     const repaired = setPreviousSessionCompletion(state, "gospels", false);
-    expect(repaired.history[0]?.completed.gospels).toBe(false);
+    expect(repaired.history[0]?.completedCounts.gospels).toBe(0);
     expect(repaired.activeSession.chapters.gospels).toBe("matthew:1");
     expect(repaired.revision).toBe(state.revision + 1);
   });
@@ -233,9 +361,57 @@ describe("reading state machine", () => {
     expect(state.activeSession.chapters.gospels).toBe("matthew:1");
 
     const repaired = setPreviousSessionCompletion(state, "gospels", true);
-    expect(repaired.history[0]?.completed.gospels).toBe(true);
+    expect(repaired.history[0]?.completedCounts.gospels).toBe(1);
     expect(repaired.activeSession.chapters.gospels).toBe("matthew:2");
     expect(repaired.cursors.gospels).toBe(cursorForChapter("gospels", "matthew:2"));
+  });
+
+  it("corrects the latest session's full count and recalculates its successor", () => {
+    let state = createInitialState(localDate("2026-08-03T12:00:00"));
+    state = setCompletion(state, "gospels", true);
+    state = completeNextAdditionalChapter(state, "gospels");
+    state = completeNextAdditionalChapter(state, "gospels");
+    state = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
+    expect(state.activeSession.chapters.gospels).toBe("matthew:4");
+
+    const shortened = setPreviousSessionCompletedCount(state, "gospels", 2);
+    expect(shortened.history[0]?.completedCounts.gospels).toBe(2);
+    expect(shortened.activeSession.chapters.gospels).toBe("matthew:3");
+    expect(shortened.cursors.gospels).toBe(
+      cursorForChapter("gospels", "matthew:3"),
+    );
+    expect(shortened.revision).toBe(state.revision + 1);
+
+    const fullCycle = setPreviousSessionCompletedCount(
+      shortened,
+      "gospels",
+      READING_LIST_BY_ID.gospels.chapters.length,
+    );
+    expect(fullCycle.activeSession.chapters.gospels).toBe("matthew:1");
+    expect(fullCycle.history[0]?.completedCounts.gospels).toBe(89);
+  });
+
+  it("guards core and count-aware previous-session corrections", () => {
+    let state = createInitialState(localDate("2026-08-03T12:00:00"));
+    state = setCompletion(state, "gospels", true);
+    state = completeNextAdditionalChapter(state, "gospels");
+    state = rolloverIfNeeded(state, localDate("2026-08-04T12:00:00"));
+
+    expect(() => setPreviousSessionCompletion(state, "gospels", false)).toThrow(
+      /additional chapters/,
+    );
+    expect(() =>
+      setPreviousSessionCompletedCount(
+        state,
+        "gospels",
+        MAX_COMPLETED_CHAPTERS_PER_LIST_PER_SESSION + 1,
+      ),
+    ).toThrow(RangeError);
+
+    state = setCompletion(state, "gospels", true);
+    expect(() => setPreviousSessionCompletedCount(state, "gospels", 3)).toThrow(
+      /successor has progress/,
+    );
   });
 
   it("refuses to change history after its current successor has progress", () => {

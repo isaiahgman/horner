@@ -2,7 +2,10 @@ import Dexie, { type EntityTable } from "dexie";
 
 import { normalizeReadingState } from "../domain/backup.js";
 import { decodeCloudState, encodeCloudCurrent } from "./cloud-codec.js";
-import type { ReadingState } from "../domain/state.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  type ReadingState,
+} from "../domain/state.js";
 
 export const GUEST_READING_STATE_SCOPE = "guest" as const;
 export type UserReadingStateScope = `user:${string}`;
@@ -12,7 +15,8 @@ export type ReadingStateScope =
 
 const USER_SCOPE_PREFIX = "user:";
 const FIREBASE_UID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-const PENDING_STATE_PREFIX = "horner-next-ten-pending-v3:";
+const PENDING_STATE_PREFIX = "horner-next-ten-pending-v4:";
+const PREVIOUS_PENDING_STATE_PREFIX = "horner-next-ten-pending-v3:";
 const LEGACY_PENDING_STATE_KEY = "horner-next-ten-pending-v2";
 const LEGACY_STATE_ID = "primary";
 const PENDING_GUEST_ADOPTION_PREFIX = "pending-guest-adoption:";
@@ -64,8 +68,13 @@ class HornerDatabase extends Dexie {
   constructor() {
     super("horner-next-ten");
     // The primary key was already an unqualified string in version 1, so
-    // scoped IDs can share the existing store without an IndexedDB upgrade.
+    // scoped IDs share the existing store without a schema change.
     this.version(1).stores({ appState: "id" });
+    // Keep the store shape unchanged, but advance the physical database
+    // version as a mixed-client barrier. Once this upgrade opens, an older app
+    // that only knows version 1 cannot reopen IndexedDB and overwrite the
+    // current-domain record after an additional-chapter write.
+    this.version(2).stores({ appState: "id" });
   }
 }
 
@@ -145,14 +154,17 @@ function assertClaimToken(claimToken: unknown): asserts claimToken is string {
   }
 }
 
-function pendingStateKey(scope: ReadingStateScope): string {
+function pendingStateKey(
+  scope: ReadingStateScope,
+  prefix = PENDING_STATE_PREFIX,
+): string {
   assertReadingStateScope(scope);
   if (scope === GUEST_READING_STATE_SCOPE) {
-    return `${PENDING_STATE_PREFIX}guest`;
+    return `${prefix}guest`;
   }
   // A separate namespace segment prevents a user UID from ever colliding with
   // the guest journal, even if UID validation changes in the future.
-  return `${PENDING_STATE_PREFIX}uid:${encodeURIComponent(userIdFromScope(scope))}`;
+  return `${prefix}uid:${encodeURIComponent(userIdFromScope(scope))}`;
 }
 
 function pendingStorage(): Storage | undefined {
@@ -292,52 +304,132 @@ function decodePendingValue(value: string | null | undefined): ReadingState | un
   }
 }
 
-function readPendingState(scope: ReadingStateScope): ReadingState | undefined {
+interface PendingStateSnapshot {
+  readonly key: string;
+  readonly priority: number;
+  readonly state: ReadingState;
+  readonly storage: Storage;
+  readonly storedValue: string;
+}
+
+function readPendingStateSnapshot(
+  scope: ReadingStateScope,
+  storage: Storage,
+  prefix: string,
+  priority: number,
+): PendingStateSnapshot | undefined {
+  const key = pendingStateKey(scope, prefix);
+  let storedValue: string | null;
+  try {
+    storedValue = storage.getItem(key);
+  } catch {
+    return undefined;
+  }
+  if (storedValue === null) return undefined;
+
+  const state = decodePendingValue(storedValue);
+  if (!state) {
+    removeStorageValueIfUnchanged(storage, key, storedValue);
+    return undefined;
+  }
+  return { key, priority, state, storage, storedValue };
+}
+
+function readPendingStateSnapshots(scope: ReadingStateScope): PendingStateSnapshot[] {
+  const storage = pendingStorage();
+  if (!storage) return [];
+  return [
+    readPendingStateSnapshot(
+      scope,
+      storage,
+      PREVIOUS_PENDING_STATE_PREFIX,
+      0,
+    ),
+    readPendingStateSnapshot(scope, storage, PENDING_STATE_PREFIX, 1),
+  ].filter((snapshot): snapshot is PendingStateSnapshot => snapshot !== undefined);
+}
+
+function latestPendingState(
+  snapshots: readonly PendingStateSnapshot[],
+): PendingStateSnapshot | undefined {
+  // Revision remains authoritative across journal formats. On an equal
+  // revision, prefer v4 because it can represent additional completed
+  // chapters that the previous v3 journal format could not preserve.
+  return snapshots.reduce<PendingStateSnapshot | undefined>((latest, snapshot) => {
+    if (!latest || snapshot.state.revision > latest.state.revision) return snapshot;
+    if (
+      snapshot.state.revision === latest.state.revision &&
+      snapshot.priority > latest.priority
+    ) return snapshot;
+    return latest;
+  }, undefined);
+}
+
+function stagePendingState(
+  scope: ReadingStateScope,
+  state: ReadingState,
+): PendingStateSnapshot | undefined {
   const storage = pendingStorage();
   if (!storage) return undefined;
   const key = pendingStateKey(scope);
   try {
-    const value = storage.getItem(key);
-    if (value === null) return undefined;
-    const state = decodePendingValue(value);
-    if (state) return state;
-    storage.removeItem(key);
-  } catch {
-    try {
-      storage.removeItem(key);
-    } catch {
-      // Storage can become unavailable between calls. IndexedDB remains the
-      // primary persistence path in that case.
-    }
-  }
-  return undefined;
-}
-
-function stagePendingState(scope: ReadingStateScope, state: ReadingState): void {
-  try {
-    pendingStorage()?.setItem(
-      pendingStateKey(scope),
-      JSON.stringify(encodeCloudCurrent(state)),
-    );
+    const storedValue = JSON.stringify(encodeCloudCurrent(state));
+    storage.setItem(key, storedValue);
+    return { key, priority: 1, state, storage, storedValue };
   } catch {
     // The compact journal stays under 850 kB by design, but a browser may
     // still disable synchronous storage. The IndexedDB write continues.
+    return undefined;
   }
 }
 
-function clearPendingState(scope: ReadingStateScope, expectedRevision?: number): void {
-  const storage = pendingStorage();
-  if (!storage) return;
-  const key = pendingStateKey(scope);
-  try {
-    if (expectedRevision !== undefined) {
-      const pending = readPendingState(scope);
-      if (pending && pending.revision !== expectedRevision) return;
+function clearPendingStateSnapshot(snapshot: PendingStateSnapshot | undefined): void {
+  if (!snapshot) return;
+  removeStorageValueIfUnchanged(
+    snapshot.storage,
+    snapshot.key,
+    snapshot.storedValue,
+  );
+}
+
+function clearSupersededPendingStates(
+  snapshots: readonly PendingStateSnapshot[],
+  durableRevision: number,
+): void {
+  for (const snapshot of snapshots) {
+    if (snapshot.state.revision <= durableRevision) {
+      // The snapshot carries the exact serialized value that was read. A
+      // concurrent tab that replaces either journal key is never cleared.
+      clearPendingStateSnapshot(snapshot);
     }
-    storage.removeItem(key);
-  } catch {
-    // A retained journal is safe: the next load compares its revision with
-    // IndexedDB and removes it once the durable copy is confirmed.
+  }
+}
+
+function stateNeedsDomainMigration(value: unknown): boolean {
+  return typeof value === "object"
+    && value !== null
+    && !Array.isArray(value)
+    && (value as { readonly version?: unknown }).version !== CURRENT_SCHEMA_VERSION;
+}
+
+function stateUsesCurrentDomainSchema(value: unknown): boolean {
+  return typeof value === "object"
+    && value !== null
+    && !Array.isArray(value)
+    && (value as { readonly version?: unknown }).version === CURRENT_SCHEMA_VERSION;
+}
+
+function currentPendingStateSnapshots(
+  snapshots: readonly PendingStateSnapshot[],
+): PendingStateSnapshot[] {
+  return snapshots.filter((snapshot) => snapshot.priority > 0);
+}
+
+function clearLegacyPendingStateSnapshots(
+  snapshots: readonly PendingStateSnapshot[],
+): void {
+  for (const snapshot of snapshots) {
+    if (snapshot.priority === 0) clearPendingStateSnapshot(snapshot);
   }
 }
 
@@ -345,33 +437,81 @@ export async function loadReadingState(
   scope: ReadingStateScope,
 ): Promise<ReadingState | undefined> {
   assertReadingStateScope(scope);
-  const pending = readPendingState(scope);
+  const pendingSnapshots = readPendingStateSnapshots(scope);
   let storedState: ReadingState | undefined;
+  let storedNeedsMigration = false;
+  let storedUsesCurrentSchema = false;
   try {
     const stored = await withTimeout(
       database.appState.get(scope),
       "Opening device storage",
     );
-    storedState = stored ? normalizeReadingState(stored.state) : undefined;
+    if (stored) {
+      storedNeedsMigration = stateNeedsDomainMigration(stored.state);
+      storedUsesCurrentSchema = stateUsesCurrentDomainSchema(stored.state);
+      storedState = normalizeReadingState(stored.state);
+    }
   } catch (error) {
-    if (pending) return pending;
+    const recoverableSnapshots = storedUsesCurrentSchema
+      ? currentPendingStateSnapshots(pendingSnapshots)
+      : pendingSnapshots;
+    if (storedUsesCurrentSchema) {
+      clearLegacyPendingStateSnapshots(pendingSnapshots);
+    }
+    const recoverable = latestPendingState(recoverableSnapshots);
+    if (recoverable) return recoverable.state;
     throw error;
   }
 
-  if (pending && (!storedState || pending.revision >= storedState.revision)) {
+  // Opening the physical version-2 database blocks an old version-1 client
+  // from writing IndexedDB again. Its legacy localStorage journal may still be
+  // present, so once IndexedDB itself is current, ignore and CAS-clear every
+  // observed v3-prefix value regardless of its claimed revision.
+  const eligiblePendingSnapshots = storedUsesCurrentSchema
+    ? currentPendingStateSnapshots(pendingSnapshots)
+    : pendingSnapshots;
+  if (storedUsesCurrentSchema) {
+    clearLegacyPendingStateSnapshots(pendingSnapshots);
+  }
+  const pending = latestPendingState(eligiblePendingSnapshots);
+  const pendingSupersedesStored = pending !== undefined && (
+    !storedState
+    || pending.state.revision > storedState.revision
+    || (
+      pending.state.revision === storedState.revision
+      // A v4 journal is the synchronous source for a possibly interrupted
+      // current-format write. Domain-v1 IndexedDB still permits equal-revision
+      // recovery from either journal while it is being migrated.
+      && (pending.priority > 0 || storedNeedsMigration)
+    )
+  );
+  if (pending && pendingSupersedesStored) {
     try {
       await withTimeout(
-        database.appState.put({ id: scope, state: pending }),
+        database.appState.put({ id: scope, state: pending.state }),
         "Recovering pending progress",
       );
-      clearPendingState(scope, pending.revision);
+      clearSupersededPendingStates(pendingSnapshots, pending.state.revision);
     } catch {
       // Keep the compact journal so this recovery can be retried next launch.
     }
-    return pending;
+    return pending.state;
   }
 
-  if (pending) clearPendingState(scope);
+  for (const snapshot of pendingSnapshots) clearPendingStateSnapshot(snapshot);
+  if (storedState && storedNeedsMigration) {
+    const migrationJournal = stagePendingState(scope, storedState);
+    try {
+      await withTimeout(
+        database.appState.put({ id: scope, state: storedState }),
+        "Migrating device progress",
+      );
+      clearPendingStateSnapshot(migrationJournal);
+    } catch {
+      // Loading remains available from the validated legacy record or the new
+      // journal. A later launch can retry the best-effort write-through.
+    }
+  }
   return storedState;
 }
 
@@ -383,12 +523,14 @@ export async function saveReadingState(
   // localStorage is only a compact write-ahead journal. Its synchronous write
   // closes the tiny page-reload window before IndexedDB commits; IndexedDB
   // remains the authoritative local store and clears the matching journal.
-  stagePendingState(scope, state);
+  const earlierPending = readPendingStateSnapshots(scope);
+  const pending = stagePendingState(scope, state);
   await withTimeout(
     database.appState.put({ id: scope, state }),
     "Saving device progress",
   );
-  clearPendingState(scope, state.revision);
+  clearPendingStateSnapshot(pending);
+  clearSupersededPendingStates(earlierPending, state.revision);
 }
 
 export async function replaceReadingState(
@@ -398,12 +540,14 @@ export async function replaceReadingState(
   assertReadingStateScope(scope);
   // A scoped replacement overwrites only this profile. Other signed-in users
   // and the guest profile must remain intact on a shared browser.
-  stagePendingState(scope, state);
+  const earlierPending = readPendingStateSnapshots(scope);
+  const pending = stagePendingState(scope, state);
   await withTimeout(
     database.appState.put({ id: scope, state }),
     "Replacing device progress",
   );
-  clearPendingState(scope, state.revision);
+  clearPendingStateSnapshot(pending);
+  clearSupersededPendingStates(earlierPending, state.revision);
 }
 
 /**
@@ -562,13 +706,14 @@ export async function claimLegacyReadingState(
   if (!snapshot || snapshot.claimToken !== claimToken) return undefined;
 
   let claimed = false;
+  let claimJournal: PendingStateSnapshot | undefined;
   await withTimeout(
     database.transaction("rw", database.appState, async () => {
       const stored = await database.appState.get(LEGACY_STATE_ID);
       const pending = readLegacyPendingValue();
       if (legacyClaimToken(stored, pending.value) !== claimToken) return;
 
-      stagePendingState(scope, snapshot.state);
+      claimJournal = stagePendingState(scope, snapshot.state);
       await database.appState.put({ id: scope, state: snapshot.state });
       await database.appState.delete(LEGACY_STATE_ID);
       claimed = true;
@@ -577,7 +722,7 @@ export async function claimLegacyReadingState(
   );
 
   if (!claimed) return undefined;
-  clearPendingState(scope, snapshot.state.revision);
+  clearPendingStateSnapshot(claimJournal);
 
   // localStorage cannot join the IndexedDB transaction. Remove only the exact
   // legacy journal that contributed to this claim, and only after the scoped
