@@ -33,6 +33,23 @@ function googleUserClaims(emailVerified = true) {
 
 function validDocument(revision = 1, preferredBibleUrl: string | null = null) {
   return {
+    schemaVersion: 3,
+    revision,
+    cursorIndexes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    activeReadingDate: "2026-08-06",
+    activeCompletedCounts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    rolloverHour: 4,
+    preferredBibleUrl,
+    history: [],
+    updatedAt: serverTimestamp(),
+  };
+}
+
+function validVersion2Document(
+  revision = 1,
+  preferredBibleUrl: string | null = null,
+) {
+  return {
     schemaVersion: 2,
     revision,
     cursorIndexes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -133,6 +150,63 @@ describe.skipIf(!emulatorAddress)("Firestore security rules", () => {
       setDoc(ownerDocument, validDocument(9_007_199_254_740_992)),
     );
     await assertFails(deleteDoc(ownerDocument));
+  });
+
+  it("allows a same-revision v2-to-v3 migration and rejects every downgrade", async () => {
+    const ownerDatabase = databaseFor("reader-a");
+    const ownerDocument = doc(ownerDatabase, "users", "reader-a");
+
+    await assertSucceeds(setDoc(ownerDocument, validVersion2Document(4)));
+    await assertFails(setDoc(ownerDocument, validVersion2Document(4)));
+    await assertSucceeds(setDoc(ownerDocument, validVersion2Document(5)));
+    await assertSucceeds(setDoc(ownerDocument, validDocument(5)));
+    await assertFails(setDoc(ownerDocument, validDocument(5)));
+    await assertFails(setDoc(ownerDocument, validVersion2Document(6)));
+    await assertSucceeds(setDoc(ownerDocument, validDocument(6)));
+  });
+
+  it("allows only ten bounded integer completed counts in version 3", async () => {
+    const ownerDatabase = databaseFor("reader-a");
+    const ownerDocument = doc(ownerDatabase, "users", "reader-a");
+
+    await assertSucceeds(setDoc(ownerDocument, {
+      ...validDocument(1),
+      activeCompletedCounts: Array(10).fill(1_023),
+    }));
+
+    const invalidCounts: unknown[][] = [
+      [-1, ...Array(9).fill(0)],
+      [1_024, ...Array(9).fill(0)],
+      [1.5, ...Array(9).fill(0)],
+      ["1", ...Array(9).fill(0)],
+      Array(9).fill(0),
+      Array(11).fill(0),
+    ];
+    for (const [index, activeCompletedCounts] of invalidCounts.entries()) {
+      await testEnvironment.clearFirestore();
+      await assertFails(setDoc(ownerDocument, {
+        ...validDocument(index + 2),
+        activeCompletedCounts,
+      }));
+    }
+  });
+
+  it("rejects oversized history and unknown version 3 fields", async () => {
+    const ownerDatabase = databaseFor("reader-a");
+    const ownerDocument = doc(ownerDatabase, "users", "reader-a");
+
+    await assertFails(setDoc(ownerDocument, {
+      ...validDocument(1),
+      history: Array(10_001).fill("entry"),
+    }));
+    await assertFails(setDoc(ownerDocument, {
+      ...validDocument(1),
+      history: "not-a-list",
+    }));
+    await assertFails(setDoc(ownerDocument, {
+      ...validDocument(1),
+      activeCompletedMask: 0,
+    }));
   });
 
   it("allows only bounded HTTPS preferred Bible URLs", async () => {
