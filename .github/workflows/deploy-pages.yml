@@ -1,4 +1,4 @@
-name: Deploy GitHub Pages
+name: Verify and deploy production
 
 on:
   push:
@@ -8,11 +8,12 @@ on:
 permissions: {}
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: production
+  cancel-in-progress: false
 
 jobs:
-  build:
+  verify:
+    name: Verify production build
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -39,8 +40,41 @@ jobs:
         with:
           path: dist
 
-  deploy:
-    needs: build
+  deploy_firestore_rules:
+    name: Deploy Firestore rules
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    environment:
+      name: firebase-production
+      url: https://console.firebase.google.com/project/horner-next-ten-isaiah/firestore/rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          credentials_json: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}'
+          project_id: horner-next-ten-isaiah
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+      - run: npm install --global firebase-tools@15.26.0
+      - name: Validate Firestore rules deployment
+        run: firebase deploy --only firestore:rules --dry-run --non-interactive --project horner-next-ten-isaiah
+      - name: Deploy Firestore rules
+        run: firebase deploy --only firestore:rules --non-interactive --project horner-next-ten-isaiah
+
+  deploy_pages:
+    name: Deploy GitHub Pages
+    needs: deploy_firestore_rules
     permissions:
       pages: write
       id-token: write

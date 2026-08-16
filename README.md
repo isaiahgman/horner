@@ -67,13 +67,14 @@ checks, including the Firestore emulator suite, before Pages deploys. A separate
 QA site is not currently required; production gets only a brief signed-in cloud
 smoke test after the gated deployment.
 
-Production builds are deployable to GitHub Pages with the included workflow.
-The hosted files contain no personal reading data. Firestore documents live
-under the signed-in user's Firebase UID. The deployed rules deny unauthenticated
-requests and prevent every account from reading or writing another account's
-document. Public visitors may use or fork the application, but that does not
-grant access to anyone else's progress. JSON export remains available as an
-independent backup.
+Pushing `main` runs the complete production pipeline: verification, a
+rules-only Firestore deployment, and then GitHub Pages publication. The hosted
+files contain no personal reading data. Firestore documents live under the
+signed-in user's Firebase UID. The deployed rules deny unauthenticated requests
+and prevent every account from reading or writing another account's document.
+Public visitors may use or fork the application, but that does not grant access
+to anyone else's progress. JSON export remains available as an independent
+backup.
 
 ## Firebase
 
@@ -111,10 +112,13 @@ profile and inspect site storage with developer tools. Use a separate browser
 or OS profile on a shared or untrusted device. Firestore's own browser cache is
 memory-only, and its server rules continue to isolate cloud documents.
 
-```sh
-firebase deploy --only auth,firestore --dry-run --project horner-next-ten-isaiah
-firebase deploy --only auth,firestore --project horner-next-ten-isaiah
-```
+The production workflow authenticates with the protected
+`firebase-production` GitHub environment and deploys only
+`firestore:rules`. Its one-time service-account setup and credential rotation
+procedure are documented in [the architecture guide](docs/architecture.md#production-deployment).
+Until that one-time CI bootstrap is complete, an authenticated owner can run
+the rules-only dry-run and deployment with
+`sh scripts/deploy-firestore-rules.sh`.
 
 Do not attach a Google Cloud billing account or add Functions, paid Google Cloud
 services, or phone authentication. The app needs only free Google sign-in and

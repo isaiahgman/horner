@@ -23,7 +23,7 @@ The layers are deliberately narrow:
 | Reader links | `src/domain/bible-links.ts` | Validated YouVersion/ESV chapter URLs and phone/tablet detection |
 | UI | `src/App.tsx` | Phone-first list, focus mode, history, settings, and recovery actions |
 | Access control | `firestore.rules` | Verified-Google identity and matching-UID enforcement |
-| Deployment | `.github/workflows/deploy-pages.yml` | Tested production build and GitHub Pages publication |
+| Deployment | `.github/workflows/deploy-pages.yml` | Verification, Firestore rules deployment, and GitHub Pages publication |
 
 Domain code must remain deterministic. Callers supply the current time and
 persist the returned state; the engine must not read clocks, browser storage,
@@ -263,15 +263,125 @@ npm run test:rules
 npm audit
 ```
 
-Deploy Authentication and Firestore configuration only when those files
-change:
+### Production deployment
 
-```sh
-firebase deploy --only auth,firestore --dry-run --project horner-next-ten-isaiah
-firebase deploy --only auth,firestore --project horner-next-ten-isaiah
+Pushing `main`, or manually dispatching the production workflow from `main`,
+runs one serialized pipeline:
+
+```text
+verify -> deploy Firestore rules -> deploy GitHub Pages
 ```
 
-Pushing `main` triggers the GitHub Pages workflow. The live application is:
+Every run tests the rules in the emulator, builds the production app, and runs
+the browser suite before receiving production credentials. The next job uses
+the protected `firebase-production` GitHub environment to server-validate and
+deploy only `firestore:rules`. That command does not request Authentication,
+index, Hosting, Functions, billing, or another Firebase-service deployment.
+Pages publishes only after that job succeeds. Production runs are not canceled
+in progress, which prevents a newer push from interrupting the pipeline between
+the rules and app deployments.
+
+The Firestore job also checks the exact `refs/heads/main` ref before requesting
+its environment secret. A manual dispatch from another branch therefore stops
+after verification, and its dependent Pages job is skipped.
+
+Bootstrap the credential once in GitHub and Google Cloud:
+
+1. Create a dedicated service account in `horner-next-ten-isaiah` and grant it
+   one project-level custom role containing exactly these permissions:
+
+   ```text
+   datastore.databases.get
+   firebase.projects.get
+   firebaserules.releases.create
+   firebaserules.releases.list
+   firebaserules.releases.update
+   firebaserules.rulesets.create
+   firebaserules.rulesets.get
+   firebaserules.rulesets.list
+   firebaserules.rulesets.test
+   resourcemanager.projects.get
+   serviceusage.services.get
+   serviceusage.services.use
+   ```
+
+   This role cannot delete rules, enable services, create projects or
+   databases, change indexes, or access documents. Firebase CLI 15.26 may
+   report missing `datastore.indexes.*` permissions during its preflight, but
+   that check is informational and nonblocking for `firestore:rules`; the
+   filtered preparation and deployment exclude indexes. Do not add Index
+   Admin, Firebase Viewer, Owner, Editor, Billing, or service-agent roles.
+2. Create the `firebase-production` GitHub environment, restrict its deployment
+   branch to protected `main`, and store the complete JSON key as its
+   `FIREBASE_SERVICE_ACCOUNT_JSON` environment secret.
+3. Trigger the workflow once and confirm both the rules and Pages deployments.
+   Delete every local copy of the JSON key after the secret is stored.
+
+The Google Cloud and GitHub setup is an external, credentialed owner action;
+the production workflow cannot bootstrap its own authority. After creating the
+protected `firebase-production` environment in the GitHub repository settings,
+an authenticated `gcloud` and `gh` session can perform the remaining one-time
+setup:
+
+```sh
+project_id='horner-next-ten-isaiah'
+service_account_id='github-firestore-rules-deployer'
+custom_role_id='hornerFirestoreRulesDeployer'
+service_account="${service_account_id}@${project_id}.iam.gserviceaccount.com"
+credential_dir="$(mktemp -d "${TMPDIR:-/tmp}/horner-firebase-rules-key.XXXXXX")"
+credential_file="${credential_dir}/key.json"
+chmod 700 "$credential_dir"
+umask 077
+
+gcloud iam service-accounts create "$service_account_id" \
+  --display-name='Horner Firestore rules deployer' \
+  --project="$project_id"
+
+gcloud iam roles create "$custom_role_id" \
+  --project="$project_id" \
+  --title='Horner Firestore Rules Deployer' \
+  --stage=GA \
+  --permissions='datastore.databases.get,firebase.projects.get,firebaserules.releases.create,firebaserules.releases.list,firebaserules.releases.update,firebaserules.rulesets.create,firebaserules.rulesets.get,firebaserules.rulesets.list,firebaserules.rulesets.test,resourcemanager.projects.get,serviceusage.services.get,serviceusage.services.use'
+
+gcloud projects add-iam-policy-binding "$project_id" \
+  --member="serviceAccount:${service_account}" \
+  --role="projects/${project_id}/roles/${custom_role_id}" \
+  --condition=None
+
+gcloud iam service-accounts keys create "$credential_file" \
+  --iam-account="$service_account" \
+  --project="$project_id"
+
+gh secret set FIREBASE_SERVICE_ACCOUNT_JSON \
+  --repo isaiahgman/horner \
+  --env firebase-production \
+  < "$credential_file"
+
+rm -- "$credential_file"
+rmdir -- "$credential_dir"
+```
+
+For rotation, create a second key for the same restricted service account,
+replace `FIREBASE_SERVICE_ACCOUNT_JSON`, verify a successful manual workflow
+run, and only then revoke the old key. Rotate immediately if exposure is
+suspected. Never place the JSON in repository files, logs, artifacts, or a
+repository-level secret. Do not create or use `FIREBASE_TOKEN`; the workflow
+uses Google Application Default Credentials from the pinned authentication
+action.
+
+The workflow owns routine Firestore rules publication. During the one-time CI
+bootstrap, an authenticated owner can publish the current rules with the
+checked-in fallback. `firebase login --reauth` is a one-time workstation
+prerequisite; repeat it only if the saved login expires or is revoked. The
+script stops if its server-side dry run fails and never reads or stores a
+credential itself:
+
+```sh
+firebase login --reauth
+sh scripts/deploy-firestore-rules.sh
+```
+
+The live application is:
 
 ```text
 https://isaiahgman.github.io/horner/
