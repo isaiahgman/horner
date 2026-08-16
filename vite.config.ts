@@ -6,18 +6,21 @@ export default defineConfig({
   base: "./",
   build: {
     // The persistent Firestore SDK is isolated in an async vendor chunk. Its
-    // minified size is ~514 kB (~153 kB gzip); the initial app stays ~102 kB gzip.
+    // minified size is ~467 kB (~137 kB gzip); the initial app stays ~105 kB gzip.
     chunkSizeWarningLimit: 525,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks(moduleId) {
-          if (moduleId.includes("/node_modules/@firebase/firestore/")) {
-            return "firebase-firestore";
-          }
-          if (moduleId.includes("/node_modules/@firebase/auth/")) {
-            return "firebase-auth";
-          }
-          return undefined;
+        codeSplitting: {
+          groups: [
+            {
+              name: "firebase-firestore",
+              test: /node_modules[\\/]@firebase[\\/]firestore[\\/]/,
+            },
+            {
+              name: "firebase-auth",
+              test: /node_modules[\\/]@firebase[\\/]auth[\\/]/,
+            },
+          ],
         },
       },
     },

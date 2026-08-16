@@ -43,6 +43,11 @@ avoid making changes on two offline devices at the same time.
 
 ## Development
 
+Use Node.js 26. The `@types/node` major intentionally matches the Node
+major used by CI; update the runtime and declarations together.
+Production builds use Vite 8's browser baseline: Chrome and Edge 111,
+Firefox 114, and Safari 16.4 or newer.
+
 ```sh
 npm install
 npm run check
