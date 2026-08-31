@@ -16,22 +16,22 @@
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
-    "dexie": "^4.2.1",
-    "firebase": "^12.17.0",
+    "dexie": "^4.4.5",
+    "firebase": "^12.18.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.12.1",
-    "@firebase/rules-unit-testing": "5.0.1",
+    "@axe-core/playwright": "^4.13.0",
+    "@firebase/rules-unit-testing": "5.0.2",
     "@playwright/test": "^1.62.1",
     "@types/node": "^25.0.0",
     "@types/react": "^19.1.10",
-    "@types/react-dom": "^19.1.7",
+    "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^5.0.2",
     "typescript": "^6.0.3",
     "vite": "^7.1.4",
     "vite-plugin-pwa": "^1.0.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.11"
   }
 }
