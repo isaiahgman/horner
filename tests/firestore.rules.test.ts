@@ -16,7 +16,7 @@ import {
 } from "firebase/firestore";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 const PROJECT_ID = "demo-horner";
 const emulatorAddress = process.env.FIRESTORE_EMULATOR_HOST;
@@ -138,6 +138,49 @@ describe.skipIf(!emulatorAddress)("Firestore security rules", () => {
     );
   });
 
+  it.each([
+    { name: "an anonymous client", userId: null, claims: {} },
+    {
+      name: "an unverified Google owner",
+      userId: "reader-a",
+      claims: googleUserClaims(false),
+    },
+    {
+      name: "a verified password owner",
+      userId: "reader-a",
+      claims: {
+        email: "reader@example.com",
+        email_verified: true,
+        firebase: { sign_in_provider: "password" },
+      },
+    },
+    {
+      name: "a different verified Google user",
+      userId: "reader-b",
+      claims: googleUserClaims(),
+    },
+  ])("denies $name access to existing recovery data", async ({ userId, claims }) => {
+    // Exercise populated recovery paths without depending on a denied
+    // client being able to create its own backup or legacy history fixture.
+    await testEnvironment.withSecurityRulesDisabled(async (context) => {
+      const database = context.firestore();
+      await setDoc(doc(database, "users", "reader-a"), validDocument());
+      await setDoc(doc(database, "users", "reader-a", "sessions", "2026-08-05"), {
+        schemaVersion: 1,
+      });
+    });
+
+    const database = userId === null
+      ? testEnvironment.unauthenticatedContext().firestore()
+      : databaseFor(userId, claims);
+
+    await assertFails(getDoc(doc(database, "users", "reader-a")));
+    await assertFails(
+      getDoc(doc(database, "users", "reader-a", "sessions", "2026-08-05")),
+    );
+    await assertFails(getDocs(collection(database, "users", "reader-a", "sessions")));
+  });
+
   it("accepts only strictly newer safe revisions and never permits deletes", async () => {
     const ownerDatabase = databaseFor("reader-a");
     const ownerDocument = doc(ownerDatabase, "users", "reader-a");
@@ -248,6 +291,10 @@ describe.skipIf(!emulatorAddress)("Firestore security rules", () => {
       "2026-08-05",
     );
     await assertSucceeds(getDoc(sessionDocument));
+    const history = await assertSucceeds(
+      getDocs(collection(ownerDatabase, "users", "reader-a", "sessions")),
+    );
+    expect(history.docs.map((session) => session.id)).toEqual(["2026-08-05"]);
     await assertFails(updateDoc(sessionDocument, { schemaVersion: 2 }));
     await assertFails(
       getDoc(
