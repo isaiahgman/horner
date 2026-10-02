@@ -67,6 +67,12 @@ checks, including the Firestore emulator suite, before Pages deploys. A separate
 QA site is not currently required; production gets only a brief signed-in cloud
 smoke test after the gated deployment.
 
+Pull requests targeting `main`, including drafts, run the same verification
+checks in a separate read-only workflow. PR checks use the local Firestore
+emulator and do not receive production credentials, upload a Pages artifact,
+or deploy the app or rules. Each PR has its own verification queue, separate
+from production.
+
 Pushing `main` runs the complete production pipeline: verification, a
 rules-only Firestore deployment, and then GitHub Pages publication. The hosted
 files contain no personal reading data. Firestore documents live under the
