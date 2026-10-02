@@ -1,7 +1,10 @@
+import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import { devices, expect, test } from "@playwright/test";
 
 import { expectNoHorizontalOverflow, openToday } from "./helpers.js";
+import { parseBackupJson } from "../src/domain/backup.js";
+import { createInitialState, setCompletion } from "../src/domain/state.js";
 
 const STARTING_CHAPTERS = [
   "Matthew 1",
@@ -322,32 +325,112 @@ test("history rejects a stale additional correction across the reading-day bound
   await expect(preservedExtra).toBeVisible();
 });
 
-test("keyboard import restores an exported backup and preserves a safety copy", async ({ page }) => {
-  await openToday(page);
-  await page.getByRole("checkbox", { name: "Mark read: Matthew 1" }).click();
-  await page.getByRole("button", { name: "Settings" }).click();
+test.describe("portable backup recovery", () => {
+  test.use({ timezoneId: "UTC", serviceWorkers: "block" });
 
-  const exportedDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Export JSON backup" }).click();
-  const exportedPath = await (await exportedDownloadPromise).path();
-  expect(exportedPath).toBeTruthy();
+  test("exported reading recovers in a fresh browser and keeps the pre-import safety copy", async ({ browser, browserName, baseURL, ignoreHTTPSErrors, context, page }) => {
+    if (!baseURL) throw new Error("The recovery test requires a local baseURL.");
+    const previewUrl = new URL(baseURL);
+    if (!["127.0.0.1", "localhost", "[::1]"].includes(previewUrl.hostname)) {
+      throw new Error("The recovery test must only run against a loopback preview.");
+    }
+    const origin = previewUrl.origin;
+    // Both profiles are synthetic and signed out. Deny all non-preview traffic,
+    // including Firebase, rather than exercising recovery against a live account.
+    await context.route("**/*", (route) => new URL(route.request().url()).origin === origin
+      ? route.continue() : route.abort());
+    const yesterday = new Date("2026-10-01T12:00:00Z");
+    const today = new Date("2026-10-02T12:00:00Z");
+    // Domain assertions run in Node, whose timezone is independent of the browser.
+    const assertionDay = new Date(2026, 9, 2, 12);
+    await page.clock.setFixedTime(yesterday);
+    await openToday(page);
+    await page.getByRole("checkbox", { name: "Mark read: Matthew 1" }).click();
+    await page.getByRole("button", { name: "Read more from Gospels" }).click();
+    await page.getByRole("checkbox", { name: "Mark additional chapter read: Matthew 2" }).click();
+    await page.getByRole("checkbox", { name: "Mark read: Acts 1" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByLabel("Reading day begins").selectOption("6");
 
-  await page.getByRole("button", { name: "Today" }).click();
-  await page.getByRole("checkbox", { name: "Mark unread: Matthew 1" }).click();
-  await page.getByRole("button", { name: "Settings" }).click();
+    await page.clock.setFixedTime(today);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("checkbox", { name: "Mark read: Matthew 3" }).click();
+    await page.getByRole("button", { name: "Read more from Gospels" }).click();
+    await page.getByRole("checkbox", { name: "Mark additional chapter read: Matthew 4" }).click();
+    await page.getByRole("checkbox", { name: "Mark read: Genesis 1" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
+    const exportedDownloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Export JSON backup" }).click();
+    const exportedPath = await (await exportedDownloadPromise).path();
+    expect(exportedPath).toBeTruthy();
+    const exported = parseBackupJson(await readFile(exportedPath!, "utf8"), assertionDay);
+    expect(exported.history).toHaveLength(1);
+    expect(exported.history[0]?.completedCounts).toMatchObject({ gospels: 2, acts: 1 });
+    expect(exported.activeSession.completedCounts).toMatchObject({ gospels: 2, pentateuch: 1 });
+    expect(exported.settings.rolloverHour).toBe(6);
 
-  const importButton = page.getByRole("button", { name: "Import JSON backup" });
-  const fileChooserPromise = page.waitForEvent("filechooser");
-  await importButton.focus();
-  await page.keyboard.press("Enter");
-  const fileChooser = await fileChooserPromise;
-  const safetyDownloadPromise = page.waitForEvent("download");
-  await fileChooser.setFiles(exportedPath!);
-  await safetyDownloadPromise;
-  await expect(page.getByText("Backup restored.")).toBeVisible();
+    // A new context has no source IndexedDB, journal, service worker, or auth
+    // session. The downloaded file is the only recovery input carried across.
+    const restoredContext = await browser.newContext({
+      ...devices[browserName === "webkit" ? "iPhone 13" : "Pixel 7"],
+      baseURL,
+      ignoreHTTPSErrors,
+      timezoneId: "UTC",
+      serviceWorkers: "block",
+      acceptDownloads: true,
+    });
+    try {
+      await restoredContext.route("**/*", (route) => new URL(route.request().url()).origin === origin
+        ? route.continue() : route.abort());
+      const restoredPage = await restoredContext.newPage();
+      await restoredPage.clock.setFixedTime(today);
+      await openToday(restoredPage);
+      await expect(restoredPage.getByRole("checkbox", { checked: true })).toHaveCount(0);
+      // Make the destination different so the safety copy must preserve the
+      // pre-import profile, not the imported data or an empty placeholder.
+      await restoredPage.getByRole("checkbox", { name: "Mark read: Job 1" }).click();
+      await restoredPage.getByRole("button", { name: "Settings" }).click();
+      const fileChooserPromise = restoredPage.waitForEvent("filechooser");
+      await restoredPage.getByRole("button", { name: "Import JSON backup" }).focus();
+      await restoredPage.keyboard.press("Enter");
+      const chooser = await fileChooserPromise;
+      const safetyDownloadPromise = restoredPage.waitForEvent("download");
+      await chooser.setFiles(exportedPath!);
+      const safetyDownload = await safetyDownloadPromise;
+      const safetyPath = await safetyDownload.path();
+      expect(safetyDownload.suggestedFilename()).toContain("-before-import.json");
+      expect(safetyPath).toBeTruthy();
+      expect(parseBackupJson(await readFile(safetyPath!, "utf8"), assertionDay))
+        .toEqual(setCompletion(createInitialState(assertionDay), "wisdom", true));
+      await expect(restoredPage.getByText("Backup restored.")).toBeVisible();
 
-  await page.getByRole("button", { name: "Today" }).click();
-  await expect(page.getByRole("checkbox", { name: "Mark unread: Matthew 1" })).toBeVisible();
+      await restoredPage.reload({ waitUntil: "domcontentloaded" });
+      await expect(restoredPage.getByRole("checkbox", { name: "Mark unread: Matthew 3" })).toBeVisible();
+      await expect(restoredPage.getByRole("checkbox", { name: "Mark unread: Genesis 1" })).toBeVisible();
+      await expect(restoredPage.getByRole("checkbox", { name: "Mark read: Job 1" })).toBeVisible();
+      await expect(restoredPage.getByRole("checkbox", { name: "Mark read: Acts 2" })).toBeVisible();
+      await restoredPage.getByRole("button", { name: "Continue Gospels; 1 additional chapters read" }).click();
+      await expect(restoredPage.getByRole("checkbox", { name: "Mark additional chapter unread: Matthew 4" })).toBeVisible();
+      await restoredPage.getByRole("button", { name: "History", exact: true }).click();
+      const historyCard = restoredPage.locator(".history-card");
+      await expect(historyCard).toHaveCount(1);
+      await historyCard.locator("summary").first().click();
+      await expect(historyCard.getByRole("checkbox", { name: "Mark unread: Matthew 1" })).toBeVisible();
+      await historyCard.locator(".history-additional-group summary").click();
+      await expect(historyCard.getByRole("checkbox", { name: "Mark additional chapter unread: Matthew 2" })).toBeVisible();
+      await restoredPage.getByRole("button", { name: "Settings" }).click();
+      await expect(restoredPage.getByLabel("Reading day begins")).toHaveValue("6");
+      const restoredDownloadPromise = restoredPage.waitForEvent("download");
+      await restoredPage.getByRole("button", { name: "Export JSON backup" }).click();
+      const restoredPath = await (await restoredDownloadPromise).path();
+      expect(restoredPath).toBeTruthy();
+      const restored = parseBackupJson(await readFile(restoredPath!, "utf8"), assertionDay);
+      expect(restored.revision).toBeGreaterThan(exported.revision);
+      expect({ ...restored, revision: exported.revision }).toEqual(exported);
+    } finally {
+      await restoredContext.close();
+    }
+  });
 });
 
 test("confirmed reset returns to Day 1 and downloads a safety backup", async ({ page }) => {
