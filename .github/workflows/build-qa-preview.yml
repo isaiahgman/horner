@@ -1,0 +1,49 @@
+name: Build QA preview
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled, closed]
+
+# No environments, secrets, OIDC, deployment rights, or saved checkout credentials.
+permissions:
+  contents: read
+
+# Unlabel/close events cancel an in-flight build even though their job is skipped.
+concurrency:
+  group: qa-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build isolated QA preview
+    if: >-
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.head.repo.id == github.repository_id &&
+      contains(github.event.pull_request.labels.*.name, 'qa-preview')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      QA_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      QA_PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build:qa
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:qa
+      - run: python3 -I -m unittest discover -s scripts -p 'qa*_test.py'
+      - run: python3 -I scripts/qa_preview.py check-dir dist-qa
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qa-preview-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: dist-qa/
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7

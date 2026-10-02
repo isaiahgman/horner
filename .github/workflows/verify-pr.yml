@@ -43,3 +43,10 @@ jobs:
           QA_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
           QA_PR_NUMBER: ${{ github.event.pull_request.number }}
       - run: npm run test:qa
+      - name: Test publisher safety and validate QA output
+        run: |
+          python3 -I -m unittest discover -s scripts -p 'qa*_test.py'
+          python3 -I scripts/qa_preview.py check-dir dist-qa
+        env:
+          QA_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          QA_PR_NUMBER: ${{ github.event.pull_request.number }}
