@@ -74,6 +74,12 @@ IndexedDB write succeeds. Import, reset, and ordinary mutations replace only
 the active profile. Firestore protects account state from clearing all browser
 data or replacing the device.
 
+A failed local-profile read is not evidence that the profile is empty. The app
+preserves the existing record, shows a retry/reload screen, and withholds reading
+and settings controls until the profile can be opened. It does not replace an
+unreadable local copy with Day 1 or potentially older cloud progress. A genuinely
+missing local record still follows normal new-profile/cloud-recovery startup.
+
 The physical IndexedDB schema advances to version 2 without changing the store
 shape. That upgrade prevents an already-installed domain-v1 client from
 reopening the database after the current client establishes domain-v2 state.
