@@ -368,7 +368,8 @@ test("confirmed reset returns to Day 1 and downloads a safety backup", async ({ 
   }
 });
 
-test("chapter links open YouVersion on mobile and ESV.org on desktop", async ({ browser, page }) => {
+test("chapter links open YouVersion on mobile and ESV.org on desktop", async ({ browser, browserName, baseURL, ignoreHTTPSErrors, page }) => {
+  if (!baseURL) throw new Error("The browser suite requires a baseURL.");
   await openToday(page);
 
   for (const [index, chapter] of STARTING_CHAPTERS.entries()) {
@@ -384,7 +385,8 @@ test("chapter links open YouVersion on mobile and ESV.org on desktop", async ({ 
 
   const ipadContext = await browser.newContext({
     ...devices["iPad Pro 11"],
-    baseURL: "http://127.0.0.1:4173",
+    baseURL,
+    ignoreHTTPSErrors,
   });
   try {
     const ipadPage = await ipadContext.newPage();
@@ -403,8 +405,9 @@ test("chapter links open YouVersion on mobile and ESV.org on desktop", async ({ 
   }
 
   const desktopContext = await browser.newContext({
-    ...devices["Desktop Chrome"],
-    baseURL: "http://127.0.0.1:4173",
+    ...devices[browserName === "webkit" ? "Desktop Safari" : "Desktop Chrome"],
+    baseURL,
+    ignoreHTTPSErrors,
   });
   try {
     const desktopPage = await desktopContext.newPage();
