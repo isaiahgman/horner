@@ -5,19 +5,24 @@ import { VitePWA } from "vite-plugin-pwa";
 export default defineConfig({
   base: "./",
   build: {
-    // The persistent Firestore SDK is isolated in an async vendor chunk. Its
-    // minified size is ~514 kB (~153 kB gzip); the initial app stays ~102 kB gzip.
+    // Keep Vite 7's production syntax floor, including iOS/Safari 16.0.
+    // Vite 8's default baseline would otherwise raise Safari to 16.4.
+    target: ["chrome107", "edge107", "firefox104", "safari16", "ios16"],
+    // Keep Firebase SDKs split from the app's initial bundle.
     chunkSizeWarningLimit: 525,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks(moduleId) {
-          if (moduleId.includes("/node_modules/@firebase/firestore/")) {
-            return "firebase-firestore";
-          }
-          if (moduleId.includes("/node_modules/@firebase/auth/")) {
-            return "firebase-auth";
-          }
-          return undefined;
+        codeSplitting: {
+          groups: [
+            {
+              name: "firebase-firestore",
+              test: /node_modules[\\/]@firebase[\\/]firestore[\\/]/,
+            },
+            {
+              name: "firebase-auth",
+              test: /node_modules[\\/]@firebase[\\/]auth[\\/]/,
+            },
+          ],
         },
       },
     },

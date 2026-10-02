@@ -74,6 +74,12 @@ IndexedDB write succeeds. Import, reset, and ordinary mutations replace only
 the active profile. Firestore protects account state from clearing all browser
 data or replacing the device.
 
+A failed local-profile read is not evidence that the profile is empty. The app
+preserves the existing record, shows a retry/reload screen, and withholds reading
+and settings controls until the profile can be opened. It does not replace an
+unreadable local copy with Day 1 or potentially older cloud progress. A genuinely
+missing local record still follows normal new-profile/cloud-recovery startup.
+
 The physical IndexedDB schema advances to version 2 without changing the store
 shape. That upgrade prevents an already-installed domain-v1 client from
 reopening the database after the current client establishes domain-v2 state.
@@ -229,6 +235,26 @@ Remain on the Spark plan. Features that can introduce billing or complicate the
 otherwise static architecture require explicit approval. In particular, do not
 add Cloud Functions for rollover: elapsed time does not advance this plan, and
 the client can calculate the next session when it opens.
+
+## Build compatibility
+
+Vite 8 uses Rolldown for bundling, Oxc for JavaScript transforms/minification,
+and Lightning CSS for CSS minification. Explicit production targets retain the
+previous Vite 7 syntax floor: Chrome/Edge 107, Firefox 104, and Safari/iOS 16.0.
+This avoids silently raising the Safari floor to Vite 8's default 16.4. Targets
+control emitted syntax; they do not polyfill browser APIs or replace testing on
+actual supported devices. Automated Chromium and WebKit runs do not establish
+compatibility with every supported Safari version or a physical iPhone.
+
+The Firebase Auth and Firestore vendor groups use Rolldown `codeSplitting`
+rather than deprecated Rollup `manualChunks`. The production PWA continues to
+precache its generated chunks for offline use. Keep Node 22 LTS (22.12 or newer)
+and the existing Firebase CLI pin; this migration requires neither Node 26 nor
+changes to deployment credentials, permissions, reading data, or sync behavior.
+
+References: [Vite 8 migration](https://vite.dev/guide/migration),
+[build targets](https://vite.dev/config/build-options#build-target), and
+[Rolldown code splitting](https://rolldown.rs/reference/OutputOptions.codeSplitting).
 
 ## Verification environments
 
