@@ -266,14 +266,17 @@ and exercises Security Rules, and GitHub Actions repeats type checking, unit
 tests, emulator tests, the production build, browser flows, accessibility, PWA,
 and phone-overflow checks before Pages can deploy.
 
-A second Firebase or Pages QA deployment is intentionally deferred. It would
-add credentials, environment drift, migration sequencing, and maintenance
-without materially improving the current local-first/static-app test surface.
+The isolated [QA build](qa-preview-build.md) supports synthetic UI review for
+large UI changes and new features. It excludes Firebase runtime/configuration,
+account sign-in, legacy owner migration, and personal backup import. Its
+separate IndexedDB/journal namespace also protects production-like local data
+when a developer reuses a localhost origin. Normal PR verification checks both
+production and QA builds. Hosting publication is a separate, opt-in layer; this
+build alone deploys nothing and requires no credentials.
+
 After CI passes, use production only for a short signed-in smoke test covering
-the real Google Auth and Firestore boundary. Reconsider a dedicated QA project
-if the app adds server code, collaborative writes, billing-enabled services, or
-frequent cloud-schema changes that cannot be represented safely in the
-emulator.
+the real Google Auth and Firestore boundary. QA cannot replace that check or
+ordinary production import/backup and rules-emulator tests.
 
 ## Operations
 
@@ -292,8 +295,8 @@ npm audit
 
 ### Pull request verification
 
-`.github/workflows/verify-pr.yml` runs on pull requests targeting `main`,
-including drafts. It repeats the production verification commands with the
+`.github/workflows/verify-pr.yml` runs on all pull requests, including drafts
+and stacked PRs. It repeats the production verification commands with the
 same Node, Java, and Firebase CLI versions, but has only `contents: read`
 permission, does not retain checkout credentials, and never requests a
 production environment or secret. Firestore tests use the `demo-horner`

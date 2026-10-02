@@ -14,7 +14,9 @@
     "test:rules:unit": "vitest run tests/firestore.rules.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "build:qa": "tsc --noEmit && vite build --config vite.qa.config.ts --mode qa",
+    "test:qa": "playwright test --config=playwright.qa.config.ts"
   },
   "dependencies": {
     "dexie": "^4.4.6",

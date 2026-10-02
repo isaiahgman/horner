@@ -62,6 +62,8 @@ import {
   type ReadingState,
 } from "./domain/state.js";
 
+import { isQaPreview, qaCommitSha, qaPrNumber } from "./qa-preview.js";
+
 type View = "today" | "history" | "settings";
 type SyncStatus = "local" | "syncing" | "saved" | "offline" | "denied" | "error";
 
@@ -80,7 +82,7 @@ const MAX_BACKUP_FILE_BYTES = 16 * 1024 * 1024;
 const CLOUD_OPERATION_TIMEOUT_MS = 15_000;
 // This is only a one-time local-storage migration marker. It is not an access
 // control rule; cloud authorization is UID-scoped in firestore.rules.
-const LEGACY_OWNER_EMAIL = "isaiahgathala@gmail.com";
+const LEGACY_OWNER_EMAIL = isQaPreview ? undefined : "isaiahgathala@gmail.com";
 
 class CloudOperationTimeoutError extends Error {}
 
@@ -107,7 +109,9 @@ type CloudModule = typeof import("./data/cloud.js");
 let cloudModulePromise: Promise<CloudModule> | undefined;
 
 function loadCloudModule(): Promise<CloudModule> {
-  cloudModulePromise ??= withCloudTimeout(import("./data/cloud.js"))
+  cloudModulePromise ??= withCloudTimeout(isQaPreview
+    ? import("./data/cloud-preview.js")
+    : import("./data/cloud.js"))
     .catch((error: unknown) => {
       cloudModulePromise = undefined;
       throw error;
@@ -1003,7 +1007,8 @@ export function App() {
       try {
         current = await loadReadingState(scope);
         if (
-          !current
+          !isQaPreview
+          && !current
           && user.email?.toLowerCase() === LEGACY_OWNER_EMAIL
         ) {
           const legacy = await readLegacyReadingState();
@@ -1246,7 +1251,9 @@ export function App() {
 
   const todayCompleted = completedCount(state.activeSession);
   const todayAdditional = additionalCompletedCount(state.activeSession);
-  const syncLabel = reloadRequired
+  const syncLabel = isQaPreview
+    ? "QA preview · synthetic guest data only"
+    : reloadRequired
     ? "Cloud version needs review"
     : reconciling
       ? "Checking cloud backup…"
@@ -1397,6 +1404,7 @@ export function App() {
   };
 
   const importBackup = async (event: ChangeEvent<HTMLInputElement>) => {
+    if (isQaPreview) return;
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -1466,6 +1474,7 @@ export function App() {
   };
 
   const signIn = async () => {
+    if (isQaPreview) return;
     if (authActionRef.current || reconcilingRef.current) return;
     authActionRef.current = "sign-in";
     lockInteractions();
@@ -1539,6 +1548,12 @@ export function App() {
 
   return (
     <div className="app-shell">
+      {isQaPreview && (
+        <aside className="qa-preview-banner" aria-label="QA preview">
+          <strong>QA preview · PR #{qaPrNumber} · {qaCommitSha?.slice(0, 12)}</strong>
+          <span>Synthetic guest data only. Sign-in and backup import are disabled. This public link expires.</span>
+        </aside>
+      )}
       <header className="topbar">
         <div className="brand-mark" aria-hidden="true">10</div>
         <div>
@@ -1715,7 +1730,9 @@ export function App() {
           <section className="secondary-view settings-view">
             <p className="eyebrow">Local and private</p>
             <h2>Settings</h2>
-            <div className={`setting-card cloud-card ${account ? "connected" : ""}`}>
+            {isQaPreview ? (
+            <div className="setting-card"><strong>Synthetic QA preview.</strong><p>Reading stays in this preview’s local guest profile. Cloud accounts and personal backup imports are disabled.</p></div>
+            ) : <div className={`setting-card cloud-card ${account ? "connected" : ""}`}>
               {account ? (
                 <>
                   <div><strong>{syncStatus === "saved" ? "Cloud protection is on." : "Signed in to cloud."}</strong><p>{account.email} · {syncStatus === "syncing" ? "Checking and saving…" : syncStatus === "offline" ? "Cloud unavailable; device copy is safe" : syncStatus === "error" ? "Cloud copy could not be read; device copy was not uploaded" : syncStatus === "denied" ? "Another cloud version needs review" : "All changes saved"}</p><p>Only this verified Google account can read the cloud copy.</p></div>
@@ -1728,7 +1745,7 @@ export function App() {
                   <button className="primary-button" type="button" onClick={signIn} disabled={reconciling}>{reconciling ? "Checking cloud…" : "Sign in with Google"}</button>
                 </>
               )}
-            </div>
+            </div>}
             <div className="setting-card">
               <label htmlFor="rollover">Reading day begins</label>
               <select
@@ -1751,10 +1768,12 @@ export function App() {
               </select>
             </div>
             <div className="setting-card stack">
-              <div><strong>Portable backup.</strong><p>Cloud sync is automatic when signed in. JSON gives you an additional independent copy whenever you want one.</p></div>
+              <div><strong>Portable backup.</strong><p>{isQaPreview ? "Export synthetic test progress only. Do not use this temporary preview for personal reading." : "Cloud sync is automatic when signed in. JSON gives you an additional independent copy whenever you want one."}</p></div>
               <button type="button" onClick={exportBackup}>Export JSON backup</button>
-              <button type="button" onClick={() => importInputRef.current?.click()} disabled={reconciling}>Import JSON backup</button>
-              <input ref={importInputRef} hidden type="file" accept="application/json,.json" onChange={importBackup} />
+              {!isQaPreview && <>
+                <button type="button" onClick={() => importInputRef.current?.click()} disabled={reconciling}>Import JSON backup</button>
+                <input ref={importInputRef} hidden type="file" accept="application/json,.json" onChange={importBackup} />
+              </>}
               <button type="button" onClick={requestPersistentStorage}>Request persistent storage</button>
             </div>
             <button className="danger-button" type="button" onClick={reset} disabled={reconciling}>Reset to Day 1</button>

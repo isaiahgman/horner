@@ -1,5 +1,7 @@
 import Dexie, { type EntityTable } from "dexie";
 
+import { localStorageNamespace } from "../qa-preview.js";
+
 import { normalizeReadingState } from "../domain/backup.js";
 import { decodeCloudState, encodeCloudCurrent } from "./cloud-codec.js";
 import {
@@ -15,13 +17,13 @@ export type ReadingStateScope =
 
 const USER_SCOPE_PREFIX = "user:";
 const FIREBASE_UID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-const PENDING_STATE_PREFIX = "horner-next-ten-pending-v4:";
-const PREVIOUS_PENDING_STATE_PREFIX = "horner-next-ten-pending-v3:";
-const LEGACY_PENDING_STATE_KEY = "horner-next-ten-pending-v2";
+const PENDING_STATE_PREFIX = `${localStorageNamespace}horner-next-ten-pending-v4:`;
+const PREVIOUS_PENDING_STATE_PREFIX = `${localStorageNamespace}horner-next-ten-pending-v3:`;
+const LEGACY_PENDING_STATE_KEY = `${localStorageNamespace}horner-next-ten-pending-v2`;
 const LEGACY_STATE_ID = "primary";
 const PENDING_GUEST_ADOPTION_PREFIX = "pending-guest-adoption:";
 const PENDING_GUEST_ADOPTION_KIND = "pending-guest-adoption";
-const EXPLICIT_SIGN_IN_INTENT_KEY = "horner-next-ten-explicit-sign-in-v1";
+const EXPLICIT_SIGN_IN_INTENT_KEY = `${localStorageNamespace}horner-next-ten-explicit-sign-in-v1`;
 export const EXPLICIT_SIGN_IN_INTENT_TTL_MS = 10 * 60 * 1_000;
 const CLAIM_TOKEN_PATTERN = /^[0-9a-f]{32}$/;
 const DATABASE_TIMEOUT_MS = 5_000;
@@ -66,7 +68,7 @@ class HornerDatabase extends Dexie {
   appState!: EntityTable<StoredState, "id">;
 
   constructor() {
-    super("horner-next-ten");
+    super(`${localStorageNamespace}horner-next-ten`);
     // The primary key was already an unqualified string in version 1, so
     // scoped IDs share the existing store without a schema change.
     this.version(1).stores({ appState: "id" });
