@@ -508,3 +508,14 @@ boundaries.
   server-side dry run remains the local compilation fallback.
 - The project-wide Spark quotas cap total public usage. App Check is not yet
   enforced, so monitor usage before promoting the app to a large audience.
+
+### Installed build identification
+
+Settings shows the package version and the first seven characters of the Git
+commit embedded at build time. The label describes the bundle currently running,
+including a cached offline copy or a rolled-back artifact; it does not fetch the
+latest release. Vite reads the checked-out `HEAD`, so production, PR, and isolated
+QA builds identify their own source. A build without Git metadata displays
+`local`; an archive-based release can set `HORNER_BUILD_SHA` to a full 40-character
+commit hash. Invalid explicit values fail the build. Local uncommitted edits do
+not change the commit label.

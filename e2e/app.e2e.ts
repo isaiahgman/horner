@@ -565,3 +565,22 @@ test("phone layouts do not overflow horizontally", async ({ page }) => {
     await expect(page.getByRole("checkbox", { name: "Mark read: Matthew 1" })).toBeEnabled();
   }
 });
+
+test("Settings identifies the installed app across navigation and reload", async ({ page }) => {
+  await openToday(page);
+  const settings = page.getByRole("button", { name: "Settings", exact: true });
+  await settings.click();
+  const label = page.getByTestId("app-version");
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  await expect(label).toContainText(`Version ${pkg.version} · Build `);
+  await expect(label).toHaveText(/Version .+ · Build (?:[a-f\d]{7}|local)/);
+  const version = await label.textContent();
+  await expectNoHorizontalOverflow(page);
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(label).toHaveCount(0);
+  await settings.click();
+  await expect(label).toHaveText(version!);
+  await page.reload();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(label).toHaveText(version!);
+});

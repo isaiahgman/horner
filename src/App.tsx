@@ -1777,6 +1777,7 @@ export function App() {
               <button type="button" onClick={requestPersistentStorage}>Request persistent storage</button>
             </div>
             <button className="danger-button" type="button" onClick={reset} disabled={reconciling}>Reset to Day 1</button>
+            <p className="quiet-note" data-testid="app-version">Version {__APP_VERSION__} · Build {__APP_BUILD__}</p>
           </section>
         )}
       </main>

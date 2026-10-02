@@ -1,8 +1,18 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { resolveBuildCommit } from "./scripts/build-info.js";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
+const version = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version as string;
+const commit = resolveBuildCommit(fileURLToPath(new URL(".", import.meta.url)), process.env.HORNER_BUILD_SHA);
+
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(version),
+    __APP_BUILD__: JSON.stringify(commit),
+  },
   base: "./",
   build: {
     // Keep Vite 7's production syntax floor, including iOS/Safari 16.0.
