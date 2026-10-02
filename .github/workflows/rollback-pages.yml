@@ -1,0 +1,78 @@
+name: Roll back production frontend
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful production run ID containing the known-good Pages artifact
+        required: true
+        type: string
+      commit_sha:
+        description: Full 40-character commit SHA of that production run
+        required: true
+        type: string
+      compatibility_reviewed:
+        description: I reviewed data compatibility and paused main merges during recovery
+        required: true
+        default: false
+        type: boolean
+      confirm:
+        description: Type ROLLBACK to deploy only these older frontend files
+        required: true
+        type: string
+
+permissions: {}
+
+# Share the whole production pipeline lock; never interrupt a rules/app deployment.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate known-good production artifact
+    if: github.repository == 'isaiahgman/horner' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # Current trusted code only; never check out or execute the rollback target.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Test rollback safeguards
+        run: python3 -I -m unittest discover -s scripts -p 'release*_test.py'
+      - name: Verify source and prepare exact archived bundle
+        id: source
+        run: python3 -I scripts/release_safety.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+      # artifact.tar already has the Pages layout. Do not tar it a second time.
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: github-pages
+          path: ${{ steps.source.outputs.bundle }}
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy_pages:
+    name: Deploy known-good frontend only
+    needs: prepare
+    # A job-only rerun must never bypass a fresh source/compatibility review.
+    if: github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Deploy retained Pages bundle
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

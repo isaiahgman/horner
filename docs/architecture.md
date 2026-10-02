@@ -338,6 +338,13 @@ when changing either workflow.
 
 ### Production deployment
 
+Routine production still auto-deploys verified main commits. A separate manual
+frontend-only rollback can reuse an unexpired, successfully deployed Pages
+artifact without deploying old Firestore rules. It refuses changes across the
+reading-engine/persistence/rules boundary and never restores user data. See the
+[release and recovery runbook](release-safety.md) for the one-day artifact
+window, compatibility review, PWA behavior, and source-revert fallback.
+
 Pushing `main`, or manually dispatching the production workflow from `main`,
 runs one serialized pipeline:
 
