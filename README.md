@@ -34,7 +34,8 @@ Bible.com as the fallback. Desktop and laptop links open ESV.org.
 - Local profiles are not encrypted against someone using the same browser or
   OS profile. Use a separate profile on shared or untrusted devices.
 
-See [sync and recovery details](docs/architecture.md#local-and-cloud-lifecycle).
+See [sync details](docs/architecture.md#local-and-cloud-lifecycle) and the
+[reading-data recovery guide](docs/recovery.md).
 
 ## Development
 
