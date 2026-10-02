@@ -237,7 +237,8 @@ and Lightning CSS for CSS minification. Explicit production targets retain the
 previous Vite 7 syntax floor: Chrome/Edge 107, Firefox 104, and Safari/iOS 16.0.
 This avoids silently raising the Safari floor to Vite 8's default 16.4. Targets
 control emitted syntax; they do not polyfill browser APIs or replace testing on
-actual supported devices. CI's mobile Chromium suite is not Safari validation.
+actual supported devices. Automated Chromium and WebKit runs do not establish
+compatibility with every supported Safari version or a physical iPhone.
 
 The Firebase Auth and Firestore vendor groups use Rolldown `codeSplitting`
 rather than deprecated Rollup `manualChunks`. The production PWA continues to
@@ -276,8 +277,9 @@ Local verification:
 npm install
 npm run check
 npm run build
-npx playwright install chromium
+npx playwright install chromium webkit
 npm run test:e2e
+npm run test:e2e:webkit
 npm run test:rules
 npm audit
 ```
@@ -290,6 +292,31 @@ same Node, Java, and Firebase CLI versions, but has only `contents: read`
 permission, does not retain checkout credentials, and never requests a
 production environment or secret. Firestore tests use the `demo-horner`
 emulator project. No Pages artifact is uploaded and no deployment job runs.
+
+The full browser suite runs twice: `test:e2e` uses Chromium with Pixel 7
+emulation, and `test:e2e:webkit` uses WebKit with iPhone 13 emulation. Both
+include persistence, desktop/tablet chapter-link behavior, accessibility, and
+service-worker cache-reload checks. This exercises the real WebKit engine with an
+emulated phone, not Safari on a physical iPhone. Production verification
+continues to use the Chromium suite.
+
+WebKit upgrades loopback HTTP assets under the production
+`upgrade-insecure-requests` CSP, so its separate preview serves the unchanged
+`dist` bundle over HTTPS. The test-only launcher requires OpenSSL, creates an
+ephemeral localhost certificate, and immediately removes the key/certificate
+files after loading them into memory. Only the isolated WebKit test config
+accepts that self-signed certificate. No certificate enters the repository or
+build output, and the production CSP remains enforced.
+
+Chromium retains `context.setOffline(true)` for its offline test. Playwright
+1.63 WebKit rejects service-worker responses in that emulation mode, matching
+[upstream issue #42775](https://github.com/microsoft/playwright/issues/42775).
+The WebKit cache-reload test instead starts its own ephemeral HTTPS origin,
+stops that server, confirms a direct network probe fails, and requires a
+successful service-worker response plus preserved checked state after reload.
+The dedicated origin prevents interference with other tests. This proves
+cached operation during an origin outage; it does not verify WebKit
+`navigator.onLine`, online/offline events, or physical-iPhone airplane mode.
 
 PR runs have a separate, per-PR concurrency group. A newer revision cancels
 obsolete checks for that PR without interrupting another PR or the serialized

@@ -52,8 +52,9 @@ suite:
 
 ```sh
 npm run build
-npx playwright install chromium
+npx playwright install chromium webkit
 npm run test:e2e
+npm run test:e2e:webkit
 npm run test:rules # requires Java 21
 ```
 
@@ -68,6 +69,15 @@ checks in a separate read-only workflow. PR checks use the local Firestore
 emulator and do not receive production credentials, upload a Pages artifact,
 or deploy the app or rules. Each PR has its own verification queue, separate
 from production.
+
+PR verification runs the full browser suite in Chromium with Pixel 7 emulation
+and WebKit with iPhone 13 emulation, including PWA cache-reload checks. WebKit
+automation is not a substitute for a smoke test in Safari on a physical iPhone.
+The WebKit preview uses HTTPS with a disposable local certificate and needs
+OpenSSL. The production workflow keeps its existing Chromium browser gate.
+Chromium tests browser offline mode; WebKit tests a stopped, isolated origin
+because its offline emulation currently rejects service-worker responses.
+WebKit airplane-mode and online/offline-event behavior remain unverified.
 
 Pushing `main` runs the complete production pipeline: verification, a
 rules-only Firestore deployment, and then GitHub Pages publication. The hosted

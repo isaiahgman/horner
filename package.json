@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:webkit": "playwright test --config=playwright.webkit.config.ts",
     "test:rules": "firebase emulators:exec --only firestore --project demo-horner --config firebase.json \"npm run test:rules:unit\"",
     "test:rules:unit": "vitest run tests/firestore.rules.test.ts",
     "test:watch": "vitest",
