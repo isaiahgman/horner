@@ -100,6 +100,8 @@ reading-day rollover happens when the app opens or resumes.
 See the [security and quota boundaries](docs/architecture.md#free-tier-and-security-boundaries)
 and [production deployment guide](docs/architecture.md#production-deployment)
 for credential setup, rotation, and the rules-only bootstrap fallback.
+For small releases, frontend-only rollback, and the distinction from data
+recovery, see the [release safety runbook](docs/release-safety.md).
 
 ## More detail
 
