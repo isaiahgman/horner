@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 
-export async function openToday(page: Page): Promise<void> {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+export async function openToday(page: Page, url = "/"): Promise<void> {
+  await page.goto(url, { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { level: 1, name: "Next Ten" })).toBeVisible();
   await expect(page.getByRole("checkbox")).toHaveCount(10);
   await expect(page.getByRole("checkbox", { name: "Mark read: Matthew 1" })).toBeEnabled();
