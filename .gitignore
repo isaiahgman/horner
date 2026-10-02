@@ -4,3 +4,19 @@ dist/
 *.log
 .firebase/
 gha-creds-*.json
+
+# Local environment values; keep sanitized examples and templates trackable.
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+!.env.template
+!.env.*.template
+
+# Conventional private service-account downloads, not public Firebase config.
+*-firebase-adminsdk-*.json
+serviceAccountKey*.json
+service-account.json
+service-account-key*.json
