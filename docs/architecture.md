@@ -246,7 +246,11 @@ account sign-in, legacy owner migration, and personal backup import. Its
 separate IndexedDB/journal namespace also protects production-like local data
 when a developer reuses a localhost origin. Normal PR verification checks both
 production and QA builds. Hosting publication is a separate, opt-in layer; this
-build alone deploys nothing and requires no credentials.
+build alone deploys nothing and requires no credentials. The separate
+[opt-in publisher](qa-previews.md) is disabled until reviewed QA-only project,
+Hosting site, OIDC identity, and owner access approval are configured. Only a
+`qa-preview` label requests public seven-day publication; ordinary CI QA checks
+do not create an environment.
 
 After CI passes, use production only for a short signed-in smoke test covering
 the real Google Auth and Firestore boundary. QA cannot replace that check or

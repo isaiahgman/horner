@@ -60,7 +60,10 @@ Firebase, browser APIs, or implicit clock access in domain code.
 - Spark supports multiple independent readers but has finite project-wide
   quotas; never describe it as infinite or design a feature that assumes
   unbounded reads, writes, accounts, or storage.
-- GitHub Pages hosts the PWA. Firebase Hosting is not part of the architecture.
+- GitHub Pages hosts the production PWA. Optional Firebase Hosting QA previews
+  use only a separately approved, unbilled QA project, guest-only synthetic data,
+  and the reviewed opt-in publisher. See `docs/qa-previews.md`; never reuse
+  production deployment access or enable QA publication without owner approval.
 - Do not add a nightly rollover job. Rollover is local and demand-driven because
   elapsed time alone never advances reading progress.
 
