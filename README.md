@@ -38,7 +38,7 @@ See [sync and recovery details](docs/architecture.md#local-and-cloud-lifecycle).
 
 ## Development
 
-Use Node.js 22, matching CI. The rules suite also needs Java 21 and Firebase CLI
+Use Node.js 22.12 or newer in the Node 22 LTS line, matching CI. The rules suite also needs Java 21 and Firebase CLI
 15.26.0 (`npm install --global firebase-tools@15.26.0`).
 
 ```sh
