@@ -1002,3 +1002,17 @@ main {
     transition: none !important;
   }
 }
+
+/* QA-only markup; normal builds never render this banner. */
+.qa-preview-banner {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.8rem 1rem;
+  margin-bottom: 1rem;
+  border: 2px solid #725008;
+  border-radius: 0.7rem;
+  background: #fff1c7;
+  color: #402b00;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}

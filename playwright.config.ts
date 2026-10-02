@@ -5,6 +5,7 @@ const previewCommand = process.env.CI
   : "npm run build && npm run preview -- --host 127.0.0.1 --port 4173 --strictPort";
 
 export default defineConfig({
+  testIgnore: "**/qa/**",
   testDir: "./e2e",
   testMatch: "**/*.e2e.ts",
   outputDir: "node_modules/.cache/playwright-results",

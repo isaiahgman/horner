@@ -1,8 +1,8 @@
 name: Verify pull request
 
 on:
+  # Verify stacked PRs as well as PRs targeting main. Permissions stay read-only.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -37,3 +37,9 @@ jobs:
       - run: npx playwright install --with-deps chromium webkit
       - run: npm run test:e2e
       - run: npm run test:e2e:webkit
+      - name: Build isolated QA mode
+        run: npm run build:qa
+        env:
+          QA_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          QA_PR_NUMBER: ${{ github.event.pull_request.number }}
+      - run: npm run test:qa

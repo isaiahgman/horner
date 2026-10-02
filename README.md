@@ -60,11 +60,12 @@ npm run test:rules # requires Java 21
 
 The Playwright suite serves the production bundle locally and uses the real
 guest IndexedDB/localStorage persistence path. GitHub Actions repeats these
-checks, including the Firestore emulator suite, before Pages deploys. A separate
-QA site is not currently required; production gets only a brief signed-in cloud
-smoke test after the gated deployment.
+checks, including the Firestore emulator suite, before Pages deploys. An isolated guest-only
+QA build supports synthetic UI review without production Firebase access; see
+[local QA preview instructions](docs/qa-preview-build.md). Production still gets
+only a brief signed-in cloud smoke test after the gated deployment.
 
-Pull requests targeting `main`, including drafts, run the same verification
+All pull requests, including drafts and stacked PRs, run the same verification
 checks in a separate read-only workflow. PR checks use the local Firestore
 emulator and do not receive production credentials, upload a Pages artifact,
 or deploy the app or rules. Each PR has its own verification queue, separate
