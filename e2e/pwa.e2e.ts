@@ -17,8 +17,11 @@ interface WebManifest {
   readonly icons?: readonly ManifestIcon[];
 }
 
-test("the production shell starts without content-security-policy violations", async ({ page }) => {
+test("the production shell starts without script errors or content-security-policy violations", async ({ page }) => {
   const violations: string[] = [];
+  const scriptErrors: string[] = [];
+  // Catch bundler/chunk execution regressions even if the shell still renders.
+  page.on("pageerror", (error) => scriptErrors.push(error.message));
   page.on("console", (message) => {
     const text = message.text();
     if (/content security policy|refused to (connect|frame|load|execute)/i.test(text)) {
@@ -29,6 +32,7 @@ test("the production shell starts without content-security-policy violations", a
   await openToday(page);
   await page.waitForTimeout(750);
   expect(violations).toEqual([]);
+  expect(scriptErrors).toEqual([]);
 });
 
 test("manifest and install icons are valid production responses", async ({ page, request }) => {
