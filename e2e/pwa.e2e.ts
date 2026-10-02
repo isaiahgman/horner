@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { openToday } from "./helpers.js";
+import { startIsolatedWebKitPreview } from "./webkit-preview.js";
 
 interface ManifestIcon {
   readonly src: string;
@@ -66,23 +67,40 @@ test("manifest and install icons are valid production responses", async ({ page,
   expect(appleIconResponse.headers()["content-type"]).toContain("image/png");
 });
 
-test("installed shell reloads from the service worker while offline", async ({ context, page }) => {
-  await openToday(page);
-  await page.evaluate(async () => navigator.serviceWorker.ready);
-
-  if (!await page.evaluate(() => Boolean(navigator.serviceWorker.controller))) {
-    await page.reload({ waitUntil: "domcontentloaded" });
-  }
-  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
-
-  await context.setOffline(true);
+test("installed shell reloads from its service worker without origin access", async ({ browserName, context, page, request }) => {
+  // Playwright's WebKit offline emulation rejects service-worker responses:
+  // https://github.com/microsoft/playwright/issues/42775
+  // Stop a dedicated origin instead, without affecting other tests or claiming
+  // to emulate navigator.onLine/offline events in WebKit.
+  const preview = browserName === "webkit" ? await startIsolatedWebKitPreview() : undefined;
   try {
-    await page.reload({ waitUntil: "domcontentloaded" });
+    await openToday(page, preview?.origin);
+    await page.getByRole("checkbox", { name: "Mark read: Matthew 1" }).click();
+    await page.evaluate(async () => navigator.serviceWorker.ready);
+
+    if (!await page.evaluate(() => Boolean(navigator.serviceWorker.controller))) {
+      await page.reload({ waitUntil: "domcontentloaded" });
+    }
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+
+    if (preview) {
+      expect((await request.get(preview.origin)).ok()).toBe(true);
+      await preview.stop();
+      await expect(request.get(preview.origin, { timeout: 2_000 })).rejects.toThrow();
+    } else {
+      await context.setOffline(true);
+    }
+
+    const response = await page.reload({ waitUntil: "domcontentloaded" });
+    expect(response?.status()).toBe(200);
+    expect(response?.fromServiceWorker()).toBe(true);
     await expect(page.getByRole("heading", { level: 1, name: "Next Ten" })).toBeVisible();
     await expect(page.getByRole("checkbox")).toHaveCount(10);
+    await expect(page.getByRole("checkbox", { name: "Mark unread: Matthew 1", checked: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Open Matthew 1 in YouVersion" })).toBeVisible();
   } finally {
-    await context.setOffline(false);
+    if (preview) await preview.stop();
+    else await context.setOffline(false);
   }
 });
 
