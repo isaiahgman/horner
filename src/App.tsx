@@ -865,6 +865,14 @@ export function App() {
               guestCandidate.claimToken,
             );
           }
+          // Local persistence and adoption cleanup can outlive an account
+          // change. Never submit this recovered copy through a newer profile.
+          if (
+            !mountedRef.current
+            || generation !== authGenerationRef.current
+            || accountRef.current?.uid !== userId
+            || storageScopeRef.current !== requestedScope
+          ) return;
           if (remoteResolved.upload) submitCloudSave(remoteResolved.state);
           else setSyncStatus("saved");
           return;

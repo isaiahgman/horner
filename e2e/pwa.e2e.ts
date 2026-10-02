@@ -21,6 +21,10 @@ interface WebManifest {
 test("the production shell starts without script errors or content-security-policy violations", async ({ page }) => {
   const violations: string[] = [];
   const scriptErrors: string[] = [];
+  const cloudChunkUrls = new Set<string>();
+  page.on("request", (request) => {
+    if (/\/assets\/cloud-[^/]+\.js$/.test(request.url())) cloudChunkUrls.add(request.url());
+  });
   // Catch bundler/chunk execution regressions even if the shell still renders.
   page.on("pageerror", (error) => scriptErrors.push(error.message));
   page.on("console", (message) => {
@@ -34,6 +38,15 @@ test("the production shell starts without script errors or content-security-poli
   await page.waitForTimeout(750);
   expect(violations).toEqual([]);
   expect(scriptErrors).toEqual([]);
+  // App startup deliberately falls back to guest when a cloud import rejects.
+  // Import that same built module explicitly so a broken vendor split cannot
+  // hide behind the guest fallback. This performs no sign-in or cloud write.
+  expect(cloudChunkUrls.size).toBe(1);
+  const [cloudChunkUrl] = [...cloudChunkUrls];
+  expect(await page.evaluate(async (url) => {
+    await import(/* @vite-ignore */ url);
+    return true;
+  }, cloudChunkUrl!)).toBe(true);
 });
 
 test("manifest and install icons are valid production responses", async ({ page, request }) => {
