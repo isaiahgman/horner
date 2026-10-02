@@ -263,6 +263,20 @@ npm run test:rules
 npm audit
 ```
 
+### Pull request verification
+
+`.github/workflows/verify-pr.yml` runs on pull requests targeting `main`,
+including drafts. It repeats the production verification commands with the
+same Node, Java, and Firebase CLI versions, but has only `contents: read`
+permission, does not retain checkout credentials, and never requests a
+production environment or secret. Firestore tests use the `demo-horner`
+emulator project. No Pages artifact is uploaded and no deployment job runs.
+
+PR runs have a separate, per-PR concurrency group. A newer revision cancels
+obsolete checks for that PR without interrupting another PR or the serialized
+production pipeline. Keep these checks aligned with production verification
+when changing either workflow.
+
 ### Production deployment
 
 Pushing `main`, or manually dispatching the production workflow from `main`,
