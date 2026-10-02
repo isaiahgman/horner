@@ -511,6 +511,7 @@ export function App() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
   const [reconciling, setReconciling] = useState(true);
   const [storageError, setStorageError] = useState("");
+  const [profileOpenError, setProfileOpenError] = useState("");
   const [expandedListId, setExpandedListId] = useState<ListId | null>(null);
   const [revealedAdditionalCounts, setRevealedAdditionalCounts] = useState<
     Partial<Record<ListId, number>>
@@ -676,7 +677,7 @@ export function App() {
   const requestCloudReconciliation = (
     requestedUser: User | null = accountRef.current,
   ): Promise<void> => {
-    if (!requestedUser) return Promise.resolve();
+    if (!requestedUser || !stateRef.current) return Promise.resolve();
     const requestedScope = userReadingStateScope(requestedUser.uid);
     if (
       cloudConflictRef.current ||
@@ -933,6 +934,7 @@ export function App() {
     lockInteractions();
     stateRef.current = undefined;
     setState(undefined);
+    setProfileOpenError("");
   };
 
   const finishProfileTransition = () => {
@@ -955,8 +957,9 @@ export function App() {
         stored = await loadReadingState(GUEST_READING_STATE_SCOPE);
       } catch {
         if (generation === authGenerationRef.current) {
-          setStorageError("Saved guest progress on this device could not be opened. Sign in to restore a cloud copy, or import a JSON backup.");
+          setProfileOpenError("Saved guest progress on this device could not be opened. Nothing has been replaced. Retry opening it before making changes.");
         }
+        return;
       }
       if (!mountedRef.current || generation !== authGenerationRef.current) return;
 
@@ -1025,8 +1028,9 @@ export function App() {
         storageReadSucceeded = true;
       } catch {
         if (generation === authGenerationRef.current) {
-          setStorageError("Saved progress for this account could not be opened. The cloud copy will be checked before changes are enabled.");
+          setProfileOpenError("Saved progress for this account could not be opened. Nothing has been replaced or uploaded. Retry opening it before making changes.");
         }
+        return;
       }
       if (
         !mountedRef.current
@@ -1230,7 +1234,19 @@ export function App() {
   );
 
   if (!state) {
-    return <main className="loading">Opening your next ten…</main>;
+    return (
+      <main className="loading">
+        {profileOpenError ? (
+          <section className="setting-card stack" role="alert">
+            <h1>Saved progress couldn’t be opened</h1>
+            <p>{profileOpenError}</p>
+            <button type="button" onClick={() => window.location.reload()}>
+              Retry saved progress
+            </button>
+          </section>
+        ) : "Opening your next ten…"}
+      </main>
+    );
   }
 
   const todayCompleted = completedCount(state.activeSession);
